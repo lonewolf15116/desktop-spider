@@ -124,6 +124,23 @@ def apply_edit(folder, target, new_text):
     return backup
 
 
+def call_model(provider, key, model, system, msgs):
+    """One blocking model call. Used by the chat thread and by the phone link."""
+    if provider == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        resp = client.messages.create(model=model, max_tokens=4000, system=system, messages=msgs)
+        return "".join(getattr(b, "text", "") for b in resp.content)
+    import openai
+    client = openai.OpenAI(api_key=key)
+    resp = client.chat.completions.create(model=model, messages=[{"role": "system", "content": system}] + msgs)
+    return resp.choices[0].message.content or ""
+
+
+def system_prompt(voice, memory_text):
+    return voice + ("\n\n" + memory_text if memory_text else "") + "\n\n" + RULES
+
+
 class Ask(QThread):
     answered = pyqtSignal(str, object)   # text, edit dict or None
     learned = pyqtSignal(list)           # facts the model suggests remembering (not yet saved)
@@ -136,23 +153,13 @@ class Ask(QThread):
         self.history, self.question, self.context, self.folder = history, question, context, folder
 
     def _call(self, system, msgs):
-        if self.provider == "anthropic":
-            import anthropic
-            client = anthropic.Anthropic(api_key=self.key)
-            resp = client.messages.create(model=self.model, max_tokens=4000, system=system, messages=msgs)
-            return "".join(getattr(b, "text", "") for b in resp.content)
-        import openai
-        client = openai.OpenAI(api_key=self.key)
-        resp = client.chat.completions.create(
-            model=self.model, messages=[{"role": "system", "content": system}] + msgs)
-        return resp.choices[0].message.content or ""
+        return call_model(self.provider, self.key, self.model, system, msgs)
 
     def run(self):
         msgs = list(self.history[-8:])
         msgs.append({"role": "user", "content": f"{self.context}\n\n---\n\n{self.question}"})
         try:
-            system = self.voice + ("\n\n" + self.memory_text if self.memory_text else "") + "\n\n" + RULES
-            text = self._call(system, msgs).strip()
+            text = self._call(system_prompt(self.voice, self.memory_text), msgs).strip()
         except ImportError:
             pkg = "anthropic" if self.provider == "anthropic" else "openai"
             self.failed.emit(f"the '{pkg}' package isn't installed (pip install {pkg})")

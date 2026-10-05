@@ -86,6 +86,13 @@ class Vesper(Persona):
         "not_now": "Let it drift, then.",
         "secret_refused": "That looks like a secret. Some threads I won't keep.",
         "already_known": "I already hold that thread.",
+        "reminder": "A thread you asked me to pull: {text}",
+        "reminder_set": "I'll tug the thread {when}: {text}",
+        "noted": "Noted.",
+        "welcome_back": "Welcome back. We were weaving {project}.",
+        "reading": "Reading the paper…",
+        "synced": "Your memory is woven across your devices.",
+        "phone_on": "Your phone can find me now.",
     }
 
     def draw(self, p, w, h, st, t, corner, accent):
@@ -278,6 +285,13 @@ class Nib(Persona):
         "not_now": "No worries, forgotten already.",
         "secret_refused": "Ooh, that looks like a secret. I'm not keeping that one!",
         "already_known": "I knew that one already!",
+        "reminder": "Hey! You asked me to remind you: {text}",
+        "reminder_set": "Got it, I'll poke you {when}: {text}",
+        "noted": "Jotted down!",
+        "welcome_back": "You're back! We were on {project}.",
+        "reading": "Ooh, a paper! Reading…",
+        "synced": "Memory synced across your devices!",
+        "phone_on": "Phone link is on! Come find me.",
     }
 
     def draw(self, p, w, h, st, t, corner, accent):

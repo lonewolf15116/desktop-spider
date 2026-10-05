@@ -2,3 +2,4 @@ PyQt5>=5.15
 openai>=1.40
 anthropic>=0.40
 pytest>=7
+pypdf>=4

@@ -7,3 +7,8 @@ __pycache__/
 memory.json
 memory.json.tmp
 stats.json
+notes.md
+reminders.json
+session.json
+phone_devices.json
+.spider.lock

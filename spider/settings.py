@@ -20,6 +20,11 @@ DEFAULTS = {
     "long_session_hours": 3,
     "focus": False,
     "learning": True,               # may the spider ask to remember things?
+    "recent_folders": [],           # projects included in the daily summary
+    "sync_folder": "",              # stage 4: folder that syncs memory between your devices
+    "phone_link": False,            # stage 4: phone chat over your local network
+    "phone_port": 8765,
+    "tray": True,
 }
 
 

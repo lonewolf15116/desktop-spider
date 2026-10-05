@@ -58,6 +58,7 @@ class Memory:
     def __init__(self, path=MEMORY_PATH):
         self.path = path
         self.items = []
+        self.forgotten = []          # ids you removed, so a synced copy can't bring them back
         self.load()
 
     def load(self):
@@ -65,13 +66,14 @@ class Memory:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
             self.items = [i for i in data.get("items", []) if isinstance(i, dict) and i.get("text")]
+            self.forgotten = [x for x in data.get("forgotten", []) if isinstance(x, str)]
         except (OSError, ValueError):
-            self.items = []
+            self.items, self.forgotten = [], []
 
     def save(self):
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"items": self.items}, f, indent=2, ensure_ascii=False)
+            json.dump({"items": self.items, "forgotten": self.forgotten[-1000:]}, f, indent=2, ensure_ascii=False)
         os.replace(tmp, self.path)
 
     def has(self, text):
@@ -99,11 +101,13 @@ class Memory:
         before = len(self.items)
         self.items = [i for i in self.items if i["id"] != item_id]
         if len(self.items) != before:
+            self.forgotten.append(item_id)
             self.save()
             return True
         return False
 
     def forget_all(self):
+        self.forgotten += [i["id"] for i in self.items]
         self.items = []
         self.save()
 
@@ -169,6 +173,11 @@ class Stats:
     def record_save(self, folder, when=None):
         when = when or time.localtime()
         self.data["hours"][when.tm_hour] += 1
+        day = time.strftime("%Y-%m-%d", when)
+        days = self.data.setdefault("saves_by_day", {})
+        days[day] = days.get(day, 0) + 1
+        for old in sorted(days)[:-30]:
+            days.pop(old, None)
         if folder:
             name = os.path.basename(os.path.normpath(folder))
             days = self.data["projects"].setdefault(name, [])
@@ -177,6 +186,9 @@ class Stats:
                 days.append(today)
                 del days[:-60]
         self.save()
+
+    def saves_today(self):
+        return self.data.get("saves_by_day", {}).get(time.strftime("%Y-%m-%d"), 0)
 
     def suggestion(self, memory, today=None):
         """At most one 'noticed' fact per day, never one already asked about."""

@@ -10,7 +10,7 @@ import time
 
 from PyQt5.QtCore import QPoint, QRect, Qt, QTimer, QUrl
 from PyQt5.QtGui import QDesktopServices, QPainter
-from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QFileDialog, QMenu, QWidget)
+from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QFileDialog, QMenu, QSystemTrayIcon, QWidget)
 
 from . import settings as cfg
 from .brain import Ask, apply_edit, build_context
@@ -19,6 +19,8 @@ from .legs import Legs
 from .memory import Memory, Stats, explicit_request, looks_secret
 from .memory_panel import MemoryPanel
 from .personas import PERSONAS, SpiderState
+from . import always, sync, tasks
+from .phone import PhoneLink
 
 SIZE = 200
 CORNERS = {"top-left": (-1, -1), "top-right": (1, -1), "bottom-left": (-1, 1), "bottom-right": (1, 1)}
@@ -63,6 +65,39 @@ class SpiderWindow(QWidget):
         self.legs.file_saved.connect(self.on_file_saved)
         self.legs.start()
 
+        # stage 2: tasks
+        self.reminders = tasks.Reminders()
+        self.notes_path = tasks.NOTES_PATH
+        self.remind_timer = QTimer(self)
+        self.remind_timer.timeout.connect(self.check_reminders)
+        self.remind_timer.start(15_000)
+
+        # stage 3: where you left off
+        self.session = always.load_session()
+        self.history = list(self.session.get("history", []))[-8:]
+
+        # stage 3: tray icon
+        self.tray = None
+        if self.s.get("tray", True) and QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = QSystemTrayIcon(self)
+            self.tray.setToolTip("Desktop Spider")
+            self._refresh_tray()
+            self.tray.activated.connect(self._tray_clicked)
+            self.tray.show()
+
+        # stage 4: devices
+        self.phone = PhoneLink(self, port=int(self.s.get("phone_port", 8765)))
+        self.phone.offer.connect(lambda f: self.offer(f, source="told"))
+        self.phone.run_tests.connect(self.legs.run_tests)
+        self.phone.notify.connect(self.tell)
+        if self.s.get("phone_link"):
+            QTimer.singleShot(1500, lambda: self.set_phone_link(True, quiet=True))
+        self.panel.changed.connect(self.sync_memory)
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(lambda: self.sync_memory(quiet=True))
+        self.sync_timer.start(5 * 60_000)
+        QTimer.singleShot(2000, lambda: self.sync_memory(quiet=True))
+
         self.anim = QTimer(self)
         self.anim.timeout.connect(self.tick)
         self.anim.start(33)
@@ -99,11 +134,20 @@ class SpiderWindow(QWidget):
         if line:
             self.bubble.say(line)
 
+    def tell(self, line, ms=6000):
+        """A short notice that shows even when the chat is open (never over a pending approval)."""
+        if self.bubble.mode == "chat":
+            self.bubble.show_answer(line)
+        elif self.bubble.mode != "approve":
+            self.bubble.say(line, ms)
+
     def _restyle(self):
         self.bubble.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"))
         if hasattr(self, "panel"):
             label = cfg.PROVIDERS[cfg.provider(self.s)][1]
             self.panel.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"), label)
+        if getattr(self, "tray", None):
+            self._refresh_tray()
 
     def save(self):
         cfg.save(self.s)
@@ -164,7 +208,16 @@ class SpiderWindow(QWidget):
             self.toggle_chat()
 
     def contextMenuEvent(self, e):
+        self.build_menu().exec_(e.globalPos())
+
+    def build_menu(self):
         m = QMenu(self)
+        m.addAction("Talk to me", self.summon)
+        m.addAction("Today's summary", self.show_summary)
+        m.addAction("Read a paper (PDF)…", self.read_paper)
+        m.addAction("Open notes", self.open_notes)
+        m.addAction(f"Memory ({len(self.memory.items)})…", self.open_memory)
+        m.addSeparator()
         pm = m.addMenu("Persona")
         grp = QActionGroup(pm)
         for key, per in PERSONAS.items():
@@ -187,7 +240,6 @@ class SpiderWindow(QWidget):
             a.triggered.connect(lambda _, p=prov: self.set_provider(p))
             grp3.addAction(a)
             bm.addAction(a)
-        m.addAction(f"Memory ({len(self.memory.items)})…", self.open_memory)
         f = QAction("Focus mode", m, checkable=True, checked=self.st.focus)
         f.triggered.connect(self.toggle_focus)
         m.addAction(f)
@@ -196,11 +248,33 @@ class SpiderWindow(QWidget):
         m.addAction(f"Watching: {os.path.basename(folder) or folder}").setEnabled(False)
         m.addAction("Choose project folder…", self.choose_folder)
         m.addAction("Run tests now", self.legs.run_tests)
-        m.addAction("Talk to me", self.toggle_chat)
+        m.addSeparator()
+        am = m.addMenu("Always there")
+        sw = QAction("Start with Windows", am, checkable=True, checked=always.startup_enabled())
+        sw.setEnabled(bool(always.startup_dir()))
+        sw.triggered.connect(self.toggle_startup)
+        am.addAction(sw)
+        am.addAction("Hide spider (tray and Ctrl+Alt+Space bring it back)" if self.isVisible() else "Show spider",
+                     self.toggle_visible).setEnabled(bool(self.tray) or not self.isVisible())
+        dm = m.addMenu("Devices")
+        sf = self.s.get("sync_folder", "")
+        if sf:
+            dm.addAction(f"Memory syncs via: {os.path.basename(os.path.normpath(sf)) or sf}").setEnabled(False)
+            dm.addAction("Sync memory now", self.sync_memory)
+            dm.addAction("Stop syncing memory", self.stop_sync)
+        else:
+            dm.addAction("Sync memory through a folder…", self.choose_sync_folder)
+        dm.addSeparator()
+        pl = QAction("Phone link (local Wi-Fi)", dm, checkable=True, checked=self.phone.running)
+        pl.triggered.connect(lambda on: self.set_phone_link(on))
+        dm.addAction(pl)
+        if self.phone.running:
+            dm.addAction("Show pairing code", self.show_pairing)
+        dm.addAction(f"Unpair all phones ({len(self.phone.devices)})", self.phone.unpair_all).setEnabled(bool(self.phone.devices))
         m.addSeparator()
         m.addAction("Open settings file", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(cfg.SETTINGS_PATH)))
         m.addAction("Quit", QApplication.quit)
-        m.exec_(e.globalPos())
+        return m
 
     def _set(self, k, v):
         self.s[k] = v
@@ -225,6 +299,8 @@ class SpiderWindow(QWidget):
         folder = QFileDialog.getExistingDirectory(None, "Which project should I watch?", start)
         if folder:
             self.s["watch_folder"] = folder
+            recent = [f for f in self.s.get("recent_folders", []) if f != folder]
+            self.s["recent_folders"] = ([folder] + recent)[:6]
             self.save()
             self.legs.start()
             self.speak("welcome", important=True)
@@ -232,6 +308,11 @@ class SpiderWindow(QWidget):
 
     # ── greeting and timers
     def greet(self):
+        last = self.session.get("last_seen", 0)
+        folder = self.s.get("watch_folder")
+        if folder and last and time.time() - last > 3 * 3600:
+            self.speak("welcome_back", important=True, project=os.path.basename(os.path.normpath(folder)))
+            return
         if not self.s.get("watch_folder"):
             self.speak("no_folder", important=True)
         else:
@@ -290,10 +371,151 @@ class SpiderWindow(QWidget):
             {"secret": "secret_refused", "duplicate": "already_known"}.get(why, "not_now"))
         if self.panel.isVisible():
             self.panel.refresh()
+        if ok:
+            self.sync_memory(quiet=True)
         self._settle_offer(line)
 
     def memory_no(self, _fact):
         self._settle_offer(self.persona.say("not_now"))
+
+    # ── stage 2: tasks
+    def run_command(self, kind, payload):
+        if kind == "note":
+            tasks.add_note(payload, self.notes_path)
+            self.bubble.show_answer(f"{self.persona.say('noted')}\n\n*{payload}*")
+        elif kind == "remind":
+            r = self.reminders.add(payload["at"], payload["text"])
+            self.bubble.show_answer(self.persona.say("reminder_set", when=tasks.when_text(r["at"]), text=r["text"]))
+        elif kind == "list_reminders":
+            ups = self.reminders.upcoming()
+            self.bubble.show_answer("\n".join(f"- {tasks.when_text(r['at'])}: {r['text']}" for r in ups)
+                                    or "No reminders set.")
+        elif kind == "summary":
+            self.bubble.show_answer(self.summary_text())
+
+    def summary_text(self):
+        folders = [f for f in dict.fromkeys([self.s.get("watch_folder", "")] + self.s.get("recent_folders", [])) if f]
+        return tasks.daily_summary(folders, self.stats.saves_today(), self.reminders.upcoming(),
+                                   tasks.recent_notes(3, self.notes_path))
+
+    def show_summary(self):
+        self.bubble.open_chat()
+        self.bubble.show_answer(self.summary_text())
+
+    def check_reminders(self):
+        for r in self.reminders.due():
+            line = self.persona.say("reminder", text=r["text"])
+            if self.bubble.mode == "chat":
+                self.bubble.show_answer(line)
+            elif self.bubble.mode != "approve":     # never cover a pending approval
+                self.bubble.say(line, 30_000)
+            if self.tray:
+                self.tray.showMessage(self.persona.name, r["text"], QSystemTrayIcon.Information, 15_000)
+
+    def open_notes(self):
+        if not os.path.exists(self.notes_path):
+            tasks.add_note("Notes start here. Type 'note: …' to the spider to add one.", self.notes_path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.notes_path))
+
+    def read_paper(self):
+        path, _ = QFileDialog.getOpenFileName(None, "Which paper should I read?", os.path.expanduser("~"),
+                                              "PDF files (*.pdf)")
+        if not path:
+            return
+        text, err = tasks.pdf_text(path)
+        self.bubble.open_chat()
+        if err:
+            self.bubble.show_answer(err)
+            return
+        ctx = f"Paper: {os.path.basename(path)}\n\n{text}"
+        self.ask(tasks.PAPER_QUESTION, extra_context=ctx)
+
+    # ── stage 3: always there
+    def summon(self):
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        if self.bubble.mode != "chat":
+            self.toggle_chat()
+        self.bubble.activateWindow()
+        self.bubble.input.setFocus()
+
+    def toggle_visible(self):
+        if self.isVisible():
+            self.hide()
+            self.bubble.close_bubble()
+        else:
+            self.show()
+
+    def toggle_startup(self, on):
+        ok, msg = always.set_startup(on)
+        self.tell(("I'll be here when Windows starts." if on else "I won't start with Windows.")
+                  if ok else f"Couldn't change that: {msg}")
+
+    def _refresh_tray(self):
+        self.tray.setIcon(always.persona_icon(self.persona, SpiderState(), self.s.get("accent", "#f2a93b")))
+        self.tray.setContextMenu(None)
+
+    def _tray_clicked(self, reason):
+        if reason == QSystemTrayIcon.Context:
+            self.build_menu().exec_(self.cursor().pos())
+        elif reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.summon()
+
+    def shutdown(self):
+        always.save_session(self.history, self.legs.folder)
+        self.phone.stop()
+        self.sync_memory(quiet=True)
+        if self.tray:
+            self.tray.hide()
+
+    # ── stage 4: devices
+    def choose_sync_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            None, "Pick a folder your cloud drive syncs (e.g. OneDrive). Memory will be shared through it.",
+            os.path.expanduser("~"))
+        if folder:
+            self.s["sync_folder"] = folder
+            self.save()
+            self.sync_memory()
+
+    def stop_sync(self):
+        self.s["sync_folder"] = ""
+        self.save()
+        self.tell("Memory stays on this device now.")
+
+    def sync_memory(self, quiet=False):
+        folder = self.s.get("sync_folder", "")
+        if not folder:
+            return
+        ok, msg, changed = sync.sync(self.memory, folder)
+        if changed and self.panel.isVisible():
+            self.panel.refresh()
+        if not quiet:
+            self.tell(self.persona.say("synced") if ok else msg)
+
+    def set_phone_link(self, on, quiet=False):
+        if on:
+            ok, info = self.phone.start()
+            self.s["phone_link"] = ok
+            self.save()
+            if not ok:
+                self.tell(info, 10_000)
+            elif not quiet:
+                self.show_pairing()
+        else:
+            self.phone.stop()
+            self.s["phone_link"] = False
+            self.save()
+            self.tell("Phone link is off.")
+
+    def show_pairing(self):
+        code = self.phone.current_code()
+        self.bubble.open_chat()
+        self.bubble.show_answer(
+            f"{self.persona.say('phone_on')}\n\nOn your phone, connected to the same Wi-Fi, open:\n\n"
+            f"**{self.phone.url()}**\n\nPairing code: **{code[:3]} {code[3:]}** (works once, for 10 minutes)\n\n"
+            "If Windows asks whether Python may use the network, allow it on **private** networks only.")
 
     def every_minute(self):
         hours = max(1, int(self.s.get("long_session_hours", 3)))
@@ -349,7 +571,11 @@ class SpiderWindow(QWidget):
             intro = self._no_key_line()
         self.bubble.open_chat(intro)
 
-    def ask(self, question):
+    def ask(self, question, extra_context=None):
+        cmd = None if extra_context else tasks.parse_command(question)
+        if cmd:
+            self.run_command(*cmd)
+            return
         fact = explicit_request(question)
         if fact:                     # "remember that …" is handled locally, no model call
             if looks_secret(fact):
@@ -367,7 +593,8 @@ class SpiderWindow(QWidget):
             return
         self.set_mode("thinking")
         self.bubble.show_thinking(self.persona.say("thinking"))
-        ctx = build_context(self.legs.folder, self.legs.last_file, self.legs.last_output, self.legs.last_syntax)
+        ctx = extra_context or build_context(self.legs.folder, self.legs.last_file, self.legs.last_output,
+                                             self.legs.last_syntax)
         self.worker = Ask(prov, key, cfg.model_for(self.s), self.persona.voice, self.history, question, ctx,
                           self.legs.folder, memory_text=self.memory.as_prompt())
         self.worker.learned.connect(self.on_learned)
@@ -440,6 +667,15 @@ def main():
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    lock = always.single_instance()
+    if lock is None:            # a spider is already running; don't start a second one
+        sys.exit(0)
     w = SpiderWindow()
     w.show()
-    sys.exit(app.exec_())
+    hotkey = always.Hotkey(app)
+    hotkey.pressed.connect(w.summon)
+    app.aboutToQuit.connect(w.shutdown)
+    app.aboutToQuit.connect(hotkey.release)
+    code = app.exec_()
+    lock.unlock()
+    sys.exit(code)
