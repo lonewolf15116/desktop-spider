@@ -103,10 +103,36 @@ def persona_icon(persona, state, accent):
     return QIcon(pm)
 
 
-# ── global shortcut (Windows): Ctrl+Alt+Space
+# ── global shortcut (Windows). Default Ctrl+Alt+S, with fallbacks if another app already owns it.
 WM_HOTKEY = 0x0312
-MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
-VK_SPACE = 0x20
+MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
+FALLBACKS = ["ctrl+alt+s", "ctrl+alt+w", "ctrl+shift+alt+s", "ctrl+shift+alt+space"]
+_MODS = {"ctrl": MOD_CONTROL, "control": MOD_CONTROL, "alt": MOD_ALT, "shift": MOD_SHIFT, "win": MOD_WIN}
+_KEYS = {"space": 0x20, "enter": 0x0D, "tab": 0x09, "esc": 0x1B}
+
+
+def parse_hotkey(combo):
+    """'ctrl+alt+s' -> (modifiers, virtual key, 'Ctrl+Alt+S'), or None if it can't be used."""
+    parts = [p.strip().lower() for p in str(combo).split("+") if p.strip()]
+    if len(parts) < 2:
+        return None
+    mods, key = 0, parts[-1]
+    for p in parts[:-1]:
+        if p not in _MODS:
+            return None
+        mods |= _MODS[p]
+    if key in _KEYS:
+        vk = _KEYS[key]
+    elif len(key) == 1 and key.isalnum():
+        vk = ord(key.upper())
+    elif key.startswith("f") and key[1:].isdigit() and 1 <= int(key[1:]) <= 12:
+        vk = 0x6F + int(key[1:])
+    else:
+        return None
+    if not mods & (MOD_CONTROL | MOD_ALT | MOD_WIN):
+        return None                      # a bare letter or Shift+letter would hijack normal typing
+    label = "+".join(p.capitalize() if p not in ("ctrl", "alt") else p.capitalize() for p in parts[:-1])
+    return mods, vk, f"{label}+{key.upper() if len(key) == 1 else key.capitalize()}"
 
 
 class HotkeyFilter(QAbstractNativeEventFilter):
@@ -129,22 +155,35 @@ class Hotkey(QObject):
     pressed = pyqtSignal()
     ID = 0xB0B
 
-    def __init__(self, app):
+    def __init__(self, app, preferred="ctrl+alt+s"):
         super().__init__()
         self.app = app
         self.ok = False
         self.filter = None
+        self.label = ""
+        self.taken = []                  # shortcuts another app already owned
         if sys.platform != "win32":
             return
         try:
             import ctypes
             self.user32 = ctypes.windll.user32
-            if self.user32.RegisterHotKey(None, self.ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE):
-                self.filter = HotkeyFilter(self.ID, self.pressed.emit)
-                app.installNativeEventFilter(self.filter)
-                self.ok = True
         except Exception:
-            self.ok = False
+            return
+        for combo in [preferred] + [c for c in FALLBACKS if c != preferred]:
+            parsed = parse_hotkey(combo)
+            if not parsed:
+                continue
+            mods, vk, label = parsed
+            try:
+                if self.user32.RegisterHotKey(None, self.ID, mods | MOD_NOREPEAT, vk):
+                    self.label = label
+                    self.filter = HotkeyFilter(self.ID, self.pressed.emit)
+                    app.installNativeEventFilter(self.filter)
+                    self.ok = True
+                    return
+            except Exception:
+                pass
+            self.taken.append(label)
 
     def release(self):
         if self.ok:

@@ -47,7 +47,7 @@ Right-click → **Read a paper (PDF)…** extracts a paper's text and asks the m
 ## Always there
 
 - **Tray icon:** click it to talk. Right-click it for the full menu, so you can hide the spider and still reach it.
-- **Ctrl+Alt+Space** opens the chat from anywhere (Windows).
+- **Ctrl+Alt+S** opens the chat from anywhere (Windows). If another app already owns it, the spider falls back to Ctrl+Alt+W and then Ctrl+Shift+Alt+S, and tells you which one it took. Set your own with `"hotkey"` in `settings.json`, e.g. `"ctrl+alt+k"`.
 - Right-click → **Always there → Start with Windows** adds a small launcher to your Startup folder. Untick it to remove it.
 - It remembers your last conversation and, after a break, says where you left off.
 - Only one spider runs at a time, even if Windows starts one and you double-click the launcher too.
@@ -77,7 +77,7 @@ Or from a terminal: `pip install -r requirements.txt`, then `python -m spider`.
 
 - **Click** to open the chat bubble. **Esc** closes it.
 - **Drag** to move it. It snaps to the nearest screen corner.
-- **Ctrl+Alt+Space** summons the chat from anywhere. The **tray icon** does the same.
+- **Ctrl+Alt+S** summons the chat from anywhere. The **tray icon** does the same. Right-click → **Always there** shows the shortcut in use.
 - **Right-click** for today's summary, papers, notes, memory, devices, brain (OpenAI or Claude), persona, chattiness (silent, normal, talkative), focus mode, project folder, running tests, and quit.
 
 Settings are saved in `settings.json`: persona, corner, accent colour, chattiness, watch folder, test command, active legs, brain (`provider`, `openai_model`, `anthropic_model`) and long-session reminder hours.

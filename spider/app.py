@@ -254,7 +254,13 @@ class SpiderWindow(QWidget):
         sw.setEnabled(bool(always.startup_dir()))
         sw.triggered.connect(self.toggle_startup)
         am.addAction(sw)
-        am.addAction("Hide spider (tray and Ctrl+Alt+Space bring it back)" if self.isVisible() else "Show spider",
+        hk = getattr(self, "hotkey", None)
+        if hk and hk.ok:
+            am.addAction(f"Shortcut: {hk.label}  (change \"hotkey\" in settings)").setEnabled(False)
+        elif hk and hk.taken:
+            am.addAction("Shortcut: none free (" + ", ".join(hk.taken) + " are taken)").setEnabled(False)
+        am.addAction(f"Hide spider (tray{' and ' + hk.label if hk and hk.ok else ''} bring it back)"
+                     if self.isVisible() else "Show spider",
                      self.toggle_visible).setEnabled(bool(self.tray) or not self.isVisible())
         dm = m.addMenu("Devices")
         sf = self.s.get("sync_folder", "")
@@ -672,8 +678,12 @@ def main():
         sys.exit(0)
     w = SpiderWindow()
     w.show()
-    hotkey = always.Hotkey(app)
+    hotkey = always.Hotkey(app, w.s.get("hotkey", "ctrl+alt+s"))
     hotkey.pressed.connect(w.summon)
+    w.hotkey = hotkey
+    if hotkey.ok and hotkey.taken:
+        QTimer.singleShot(2500, lambda: w.tell(f"{', '.join(hotkey.taken)} belongs to another app, "
+                                               f"so my shortcut is {hotkey.label}."))
     app.aboutToQuit.connect(w.shutdown)
     app.aboutToQuit.connect(hotkey.release)
     code = app.exec_()

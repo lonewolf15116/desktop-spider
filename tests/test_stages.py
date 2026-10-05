@@ -220,3 +220,12 @@ def test_phone_commands_and_model(link):
     assert "secret" in link.answer("remember that my token is sk-abcdefghijklmnopqrstu")
     link.unpair_all()
     assert _req(link.base + "/api/ask", {"q": "hi"}, cookie)[0] == 401
+
+
+def test_parse_hotkey():
+    assert always.parse_hotkey("ctrl+alt+s") == (0x0002 | 0x0001, ord("S"), "Ctrl+Alt+S")
+    assert always.parse_hotkey("Ctrl+Shift+Alt+Space")[1] == 0x20
+    assert always.parse_hotkey("ctrl+alt+f9")[1] == 0x78
+    assert always.parse_hotkey("shift+a") is None          # would hijack typing
+    assert always.parse_hotkey("s") is None and always.parse_hotkey("ctrl+banana") is None
+    assert always.parse_hotkey("hyper+s") is None
