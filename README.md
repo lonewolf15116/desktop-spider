@@ -25,6 +25,7 @@ Every action takes one of three routes, shown by the colour of the spider's thre
 Click the spider (or press **Ctrl+Alt+V**) to open a proper chat window. Move and resize it, and it opens in the same place next time.
 
 - **Replies stream in** as they're written. **Stop** cuts one short.
+- **Watch the legs pull.** At the top of the chat, every answer grows a web: one leg for each thing the spider pulls in, coloured by route. Green legs are pulled on your laptop: the project, your last file, test output, memory, and every file the model asks to read. Blue is the model writing. Gold legs are fixes waiting for your Approve. A leg is dashed while it pulls, goes solid when its thing lands, and snaps red if it fails (a file that isn't there, say). When the model asks for several files at once, the legs fetch them in parallel. After you approve a fix, one more leg brings back the test result.
 - Code blocks have a **Copy** button.
 - **It reads your project.** Before answering, the model can list folders, read files and search your code. You'll see what it's doing under the chat (for example *Reading app/api.py*). These tools are read-only, can't leave the project folder and never open `.env`.
 - **Fixes that span files.** One answer can change up to 6 files. You get every diff in one card and choose **Approve all** or **Reject**.

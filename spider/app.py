@@ -601,6 +601,13 @@ class SpiderWindow(QWidget):
     # ── code route: legs
     def on_leg(self, leg, state, info):
         self.st.legs[leg] = state
+        web = self.chat.web
+        if leg == "tests" and getattr(self, "_tests_leg", False):     # tests after an approved fix get a leg
+            if state != "running":
+                self._tests_leg = False
+            label = {"pass": f"tests · {info.get('passed', 0)} ok", "fail": "tests failed",
+                     "none": "no tests"}.get(state, "tests")
+            web.pull("tests", label, "code", {"running": "pulling", "fail": "fail"}.get(state, "done"))
         if self.st.mode in ("thinking", "waiting"):
             return      # don't interrupt the model or a pending approval
         if leg == "syntax" and state == "fail":
@@ -667,14 +674,40 @@ class SpiderWindow(QWidget):
         ctx = extra_context or build_context(self.legs.folder, self.legs.last_file, self.legs.last_output,
                                              self.legs.last_syntax)
         self._learned = []
+        self._send_legs(ctx, extra_context)
         self.worker = Ask(prov, key, cfg.model_for(self.s), self.persona.voice, self.history, question, ctx,
                           self.legs.folder, memory_text=self.memory.as_prompt())
         self.worker.partial.connect(self.chat.stream)
         self.worker.activity.connect(self.chat.show_activity)
+        self.worker.pulled.connect(lambda k, label, state: self.chat.web.pull("tool:" + k, label, "code", state))
         self.worker.learned.connect(self.on_learned)
         self.worker.answered.connect(lambda text, edits, q=question: self.on_answer(q, text, edits))
         self.worker.failed.connect(self.on_fail)
         self.worker.start()
+
+    def _send_legs(self, ctx, extra_context):
+        """The web: one leg for each thing that goes into this answer. They land one after another."""
+        web = self.chat.web
+        legs = []
+        if extra_context:
+            legs.append(("paper", "the paper"))
+        else:
+            if self.legs.folder:
+                legs.append(("overview", os.path.basename(os.path.normpath(self.legs.folder)) + "/"))
+            if self.legs.last_file:
+                legs.append(("lastfile", os.path.basename(self.legs.last_file)))
+            if self.legs.last_output:
+                legs.append(("testout", "test output"))
+            if self.legs.last_syntax:
+                legs.append(("syntax", "syntax error"))
+        if self.memory.items:
+            legs.append(("memory", f"memory · {len(self.memory.items)}"))
+        if self.history:
+            legs.append(("history", f"chat · {len(self.history) // 2}"))
+        for i, (key, label) in enumerate(legs):
+            web.pull(key, label, "code", "pulling")
+            QTimer.singleShot(140 + 110 * i, lambda k=key: web.set_state(k, "done"))
+        web.pull("model", cfg.model_for(self.s), "model", "pulling")
 
     def stop_answer(self):
         if self.worker and self.worker.isRunning():
@@ -703,8 +736,11 @@ class SpiderWindow(QWidget):
         self.history = self.history[-12:]
         always.save_session(self.history, self.legs.folder)
         self.chat.finish_answer(text)
+        self.chat.web.set_state("model", "done")
         if edits:
             self.pending_edits = list(edits)
+            for e in self.pending_edits:
+                self.chat.web.pull("you:" + e["rel"], os.path.basename(e["rel"]), "you", "pulling")
             self.set_mode("waiting")     # the "you" route: gold thread, nothing written yet
             self.chat.show_edits(self.persona.say("needs_approval"), self.pending_edits)
         else:
@@ -715,6 +751,7 @@ class SpiderWindow(QWidget):
 
     def on_fail(self, msg):
         self.set_mode("idle")
+        self.chat.web.set_state("model", "fail")
         self.chat.finish_answer(self.persona.say("error", msg=msg))
 
     # ── you route
@@ -728,8 +765,10 @@ class SpiderWindow(QWidget):
             try:
                 apply_edit(self.legs.folder, e["target"], e["text"])
                 done.append(e["rel"])
+                self.chat.web.set_state("you:" + e["rel"], "done")
             except OSError as err:
                 errors.append(f"{e['rel']}: {err}")
+                self.chat.web.set_state("you:" + e["rel"], "fail")
         self.set_mode("idle")
         lines = [self.persona.say("approved") if done else self.persona.say("error", msg="; ".join(errors))]
         if done:
@@ -738,9 +777,12 @@ class SpiderWindow(QWidget):
             lines.append("Not written: " + "; ".join(errors))
         self.chat.show_answer("\n\n".join(lines))
         if done:
+            self._tests_leg = True
             self.legs.run_tests()
 
     def reject(self):
+        for e in self.pending_edits:
+            self.chat.web.set_state("you:" + e["rel"], "fail")
         self.pending_edits = []
         self.chat.clear_edits()
         self.set_mode("idle")

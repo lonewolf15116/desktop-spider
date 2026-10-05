@@ -8,6 +8,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .memory import extract_proposals
 
@@ -239,6 +240,16 @@ def tool_label(name, args):
     return f"Looking in {args.get('path') or 'the project'}"
 
 
+def short_label(name, args):
+    """A few characters for a leg's tag: 'api.py', '/def top/', 'app/'."""
+    if name == "read_file":
+        return os.path.basename(str(args.get("path", ""))) or "file"
+    if name == "search_code":
+        pat = str(args.get("pattern", ""))
+        return f"/{pat[:18]}{'…' if len(pat) > 18 else ''}/"
+    return (str(args.get("path") or "").rstrip("/") or "project") + "/"
+
+
 def parse_edits(text, folder):
     """Pull every ```edit block out of a reply. Returns (clean_text, edits, ignored_paths)."""
     edits, ignored = [], []
@@ -256,6 +267,7 @@ class Ask(QThread):
     """One question: streams the reply, lets the model use project tools, returns proposed edits."""
     partial = pyqtSignal(str)            # the whole reply so far (streams)
     activity = pyqtSignal(str)           # "Reading app.py", "Searching for …"
+    pulled = pyqtSignal(str, str, str)   # leg id, label, "pulling" | "done" | "fail": one leg per tool call
     answered = pyqtSignal(str, object)   # final text, list of edits (may be empty)
     learned = pyqtSignal(list)           # facts the model suggests remembering (not yet saved)
     failed = pyqtSignal(str)
@@ -271,6 +283,26 @@ class Ask(QThread):
 
     def stop(self):
         self.stopped = True
+
+    def _pull(self, calls):
+        """Send out one leg per tool call and pull them all in parallel. calls: [(id, name, args)]."""
+        for cid, name, args in calls:
+            self.pulled.emit(cid, short_label(name, args), "pulling")
+        if len(calls) == 1:
+            self.activity.emit(tool_label(calls[0][1], calls[0][2]))
+        else:
+            self.activity.emit(f"{len(calls)} legs pulling at once")
+
+        # the legs run on worker threads; each one is reported from this thread as it lands
+        bad = ("No such", "Not a folder", "Tool error", "Bad pattern", "That file", "Unknown tool")
+        with ThreadPoolExecutor(max_workers=min(8, len(calls) or 1)) as pool:
+            futures = {pool.submit(run_tool, self.folder, name, args): (cid, name, args)
+                       for cid, name, args in calls}
+            for fut in as_completed(futures):
+                cid, name, args = futures[fut]
+                self.pulled.emit(cid, short_label(name, args), "fail" if fut.result().startswith(bad) else "done")
+            by_id = {futures[f][0]: f.result() for f in futures}
+        return [by_id[cid] for cid, _, _ in calls]
 
     def _emit(self, extra):
         self.shown += extra
@@ -312,13 +344,15 @@ class Ask(QThread):
             convo.append({"role": "assistant", "content": text or None, "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                 for c in ordered]})
+            parsed = []
             for c in ordered:
                 try:
                     args = json.loads(c["args"] or "{}")
                 except ValueError:
                     args = {}
-                self.activity.emit(tool_label(c["name"], args))
-                convo.append({"role": "tool", "tool_call_id": c["id"], "content": run_tool(self.folder, c["name"], args)})
+                parsed.append((c["id"], c["name"], args if isinstance(args, dict) else {}))
+            for (cid, _, _), out in zip(parsed, self._pull(parsed)):
+                convo.append({"role": "tool", "tool_call_id": cid, "content": out})
             if self.shown and not self.shown.endswith("\n"):
                 self.shown = self.shown.rstrip(" ")
                 self._emit("\n\n")
@@ -343,11 +377,8 @@ class Ask(QThread):
             if not uses:
                 return
             convo.append({"role": "assistant", "content": final.content})
-            results = []
-            for b in uses:
-                self.activity.emit(tool_label(b.name, b.input or {}))
-                results.append({"type": "tool_result", "tool_use_id": b.id,
-                                "content": run_tool(self.folder, b.name, b.input or {})})
+            outs = self._pull([(b.id, b.name, b.input or {}) for b in uses])
+            results = [{"type": "tool_result", "tool_use_id": b.id, "content": out} for b, out in zip(uses, outs)]
             convo.append({"role": "user", "content": results})
             if self.shown and not self.shown.endswith("\n"):
                 self.shown = self.shown.rstrip(" ")

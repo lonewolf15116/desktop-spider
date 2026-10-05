@@ -8,6 +8,7 @@ import re
 
 from PyQt5.QtCore import QRect, QSize, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QFontDatabase, QGuiApplication
+from .web import WebStrip
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
                              QScrollArea, QSizePolicy, QTextBrowser, QVBoxLayout, QWidget)
 
@@ -239,6 +240,9 @@ class ChatWindow(QWidget):
         head.addStretch(1)
         head.addWidget(self.newbtn)
         lay.addLayout(head)
+        self.web = WebStrip()          # one leg per thing pulled in for the current answer
+        self.web.hide()
+        lay.addWidget(self.web)
 
         self.scroll = QScrollArea(widgetResizable=True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -318,6 +322,7 @@ class ChatWindow(QWidget):
         self.name.setText(persona_name.upper() if key == "vesper" else persona_name)
         self.model.setText(model_label)
         self.setWindowTitle(f"{persona_name} · Desktop Spider")
+        self.web.style_for(key, accent)
 
     @property
     def mode(self):
@@ -356,11 +361,15 @@ class ChatWindow(QWidget):
             w = self.vbox.takeAt(0).widget()
             if w:
                 w.deleteLater()
+        self.web.reset()
+        self.web.hide()
         self.cleared.emit()
 
     # ── streaming
     def begin_answer(self, thinking_line):
         self.set_busy(True)
+        self.web.reset()
+        self.web.show()
         self.current = self._add(Message("bot", f"*{thinking_line}*"))
         self.show_activity("")
 

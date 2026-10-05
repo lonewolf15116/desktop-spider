@@ -138,3 +138,78 @@ def test_claude_streams_and_uses_tools(tmp_path, monkeypatch):
     result = calls[1]["messages"][-1]["content"][0]
     assert result["type"] == "tool_result" and "app/main.py:3:" in result["content"]
     assert out["text"] == "Let me look.\n\nIt prints hi."
+
+
+def test_tool_calls_are_pulled_in_parallel_with_one_leg_each(tmp_path, monkeypatch):
+    import sys
+    import threading
+    import time
+    import types
+    import spider.brain as brain
+    root = _project(tmp_path)
+    active, peak = [0], [0]
+    lock = threading.Lock()
+    real = brain.run_tool
+
+    def slow(folder, name, args):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.15)
+        with lock:
+            active[0] -= 1
+        return real(folder, name, args)
+
+    monkeypatch.setattr(brain, "run_tool", slow)
+
+    def chunk(content=None, tool_calls=None):
+        d = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(delta=d)])
+
+    rounds = []
+
+    class Fake:
+        def __init__(self, api_key):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def create(self, model, messages, stream=False, tools=None):
+            rounds.append([dict(m) for m in messages])
+            if len(rounds) == 1:
+                specs = [("read_file", '{"path": "app/main.py"}'), ("read_file", '{"path": "nope.py"}'),
+                         ("search_code", '{"pattern": "print"}')]
+                fn = lambda n, a: types.SimpleNamespace(name=n, arguments=a)
+                return iter([chunk(tool_calls=[types.SimpleNamespace(index=i, id=f"c{i}", function=fn(n, a))
+                                               for i, (n, a) in enumerate(specs)])])
+            return iter([chunk("Done.")])
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=Fake))
+    a = brain.Ask("openai", "k", "m", "You are Zip.", [], "q", "ctx", root)
+    legs = []
+    a.pulled.connect(lambda k, label, state: legs.append((k, label, state)))
+    a.run()
+    assert peak[0] == 3                                   # all three legs out at once
+    assert [l for l in legs if l[2] == "pulling"] == [("c0", "main.py", "pulling"), ("c1", "nope.py", "pulling"),
+                                                        ("c2", "/print/", "pulling")]
+    assert ("c1", "nope.py", "fail") in legs and ("c0", "main.py", "done") in legs
+    tool_msgs = [m for m in rounds[1] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c0", "c1", "c2"]   # answers stay in order
+
+
+def test_web_strip_counts_routes_and_lands_legs():
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from spider.web import WebStrip
+    w = WebStrip()
+    w.resize(460, WebStrip.H)
+    w.style_for("nib", "#f2a93b")
+    w.pull("overview", "papertrail/", "code")
+    w.pull("model", "gpt-5-mini", "model")
+    w.pull("you:a.py", "a.py", "you")
+    assert w.busy() and w.counts() == {"code": 1, "model": 1, "you": 1}
+    for k in ("overview", "model"):
+        w.set_state(k, "done")
+    w.set_state("you:a.py", "fail")
+    assert not w.busy() and w.legs["you:a.py"].state == "fail"
+    w.grab()                                               # paints without errors
+    w.reset()
+    assert w.counts() == {"code": 0, "model": 0, "you": 0}
