@@ -678,7 +678,7 @@ def main():
         sys.exit(0)
     w = SpiderWindow()
     w.show()
-    hotkey = always.Hotkey(app, w.s.get("hotkey", "ctrl+alt+s"))
+    hotkey = always.Hotkey(app, w.s.get("hotkey", "ctrl+alt+v"))
     hotkey.pressed.connect(w.summon)
     w.hotkey = hotkey
     if hotkey.ok and hotkey.taken:

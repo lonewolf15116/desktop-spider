@@ -103,10 +103,10 @@ def persona_icon(persona, state, accent):
     return QIcon(pm)
 
 
-# ── global shortcut (Windows). Default Ctrl+Alt+S, with fallbacks if another app already owns it.
+# ── global shortcut (Windows). Default Ctrl+Alt+V, with fallbacks if another app already owns it.
 WM_HOTKEY = 0x0312
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
-FALLBACKS = ["ctrl+alt+s", "ctrl+alt+w", "ctrl+shift+alt+s", "ctrl+shift+alt+space"]
+FALLBACKS = ["ctrl+alt+v", "ctrl+alt+s", "ctrl+alt+w", "ctrl+shift+alt+s"]
 _MODS = {"ctrl": MOD_CONTROL, "control": MOD_CONTROL, "alt": MOD_ALT, "shift": MOD_SHIFT, "win": MOD_WIN}
 _KEYS = {"space": 0x20, "enter": 0x0D, "tab": 0x09, "esc": 0x1B}
 
@@ -155,7 +155,7 @@ class Hotkey(QObject):
     pressed = pyqtSignal()
     ID = 0xB0B
 
-    def __init__(self, app, preferred="ctrl+alt+s"):
+    def __init__(self, app, preferred="ctrl+alt+v"):
         super().__init__()
         self.app = app
         self.ok = False

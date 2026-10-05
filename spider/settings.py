@@ -25,7 +25,7 @@ DEFAULTS = {
     "phone_link": False,            # stage 4: phone chat over your local network
     "phone_port": 8765,
     "tray": True,
-    "hotkey": "ctrl+alt+s",          # stage 3: global shortcut; falls back if another app owns it
+    "hotkey": "ctrl+alt+v",          # stage 3: global shortcut; falls back if another app owns it
 }
 
 
