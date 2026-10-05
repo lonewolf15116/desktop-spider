@@ -1,0 +1,119 @@
+"""The Claude route: answers questions with the current file and test output as context.
+
+Edits come back as a proposal only. Nothing is written until you approve it.
+"""
+import difflib
+import os
+import re
+import time
+
+from PyQt5.QtCore import QThread, pyqtSignal
+
+EDIT_RE = re.compile(r"```edit\s+path=([^\s`]+)\s*\n(.*?)```", re.S)
+
+RULES = """You help the user with the code in their project. Context about their current file and latest test run is below.
+
+If, and only if, a code change would clearly help (for example they ask for a fix), propose it with exactly one block in this form:
+```edit path=<path relative to the project folder>
+<the complete new contents of that file>
+```
+Put your short explanation outside the block. Never say you have changed anything: the user reviews and approves every edit themselves."""
+
+
+def build_context(folder, file_path, test_output, syntax):
+    parts = []
+    if folder:
+        parts.append(f"Project folder: {folder}")
+    if file_path and os.path.isfile(file_path):
+        rel = os.path.relpath(file_path, folder) if folder else file_path
+        try:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
+                src = f.read()
+        except OSError:
+            src = ""
+        if len(src) > 15000:
+            src = src[:15000] + "\n# … (truncated)"
+        parts.append(f"Most recently saved file: {rel}\n```python\n{src}\n```")
+    if syntax:
+        path, line, msg = syntax
+        parts.append(f"Syntax error in {os.path.relpath(path, folder) if folder else path}, line {line}: {msg}")
+    if test_output:
+        parts.append(f"Latest test output (tail):\n```\n{test_output[-4000:]}\n```")
+    return "\n\n".join(parts) or "No project context yet."
+
+
+def safe_target(folder, rel):
+    """Resolve rel inside folder; refuse anything that escapes it."""
+    if not folder:
+        return None
+    root = os.path.realpath(folder)
+    target = os.path.realpath(os.path.join(root, rel))
+    if target == root or not target.startswith(root + os.sep):
+        return None
+    return target
+
+
+def make_diff(target, new_text, rel):
+    try:
+        with open(target, encoding="utf-8", errors="replace") as f:
+            old = f.read()
+    except OSError:
+        old = ""
+    diff = difflib.unified_diff(old.splitlines(), new_text.splitlines(),
+                                fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="", n=2)
+    return "\n".join(diff)
+
+
+def apply_edit(folder, target, new_text):
+    """Back up the old file, then write the new one. Returns the backup path."""
+    backup_dir = os.path.join(folder, ".spider_backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    backup = ""
+    if os.path.exists(target):
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = os.path.join(backup_dir, f"{os.path.basename(target)}.{stamp}.bak")
+        with open(target, "rb") as src, open(backup, "wb") as dst:
+            dst.write(src.read())
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="") as f:
+        f.write(new_text if new_text.endswith("\n") else new_text + "\n")
+    return backup
+
+
+class Ask(QThread):
+    answered = pyqtSignal(str, object)   # text, edit dict or None
+    failed = pyqtSignal(str)
+
+    def __init__(self, key, model, voice, history, question, context, folder):
+        super().__init__()
+        self.key, self.model, self.voice = key, model, voice
+        self.history, self.question, self.context, self.folder = history, question, context, folder
+
+    def run(self):
+        try:
+            import anthropic
+        except ImportError:
+            self.failed.emit("the 'anthropic' package isn't installed (pip install anthropic)")
+            return
+        try:
+            client = anthropic.Anthropic(api_key=self.key)
+            msgs = list(self.history[-8:])
+            msgs.append({"role": "user", "content": f"{self.context}\n\n---\n\n{self.question}"})
+            resp = client.messages.create(model=self.model, max_tokens=4000,
+                                          system=self.voice + "\n\n" + RULES, messages=msgs)
+            text = "".join(getattr(b, "text", "") for b in resp.content).strip()
+        except Exception as e:  # network, auth, model name…
+            self.failed.emit(str(e)[:300])
+            return
+        edit = None
+        m = EDIT_RE.search(text)
+        if m:
+            rel, body = m.group(1).strip(), m.group(2)
+            target = safe_target(self.folder, rel)
+            if target:
+                edit = {"rel": rel, "target": target, "text": body,
+                        "diff": make_diff(target, body, rel)}
+            text = EDIT_RE.sub("", text).strip()
+            if not target:
+                text += f"\n\n(I ignored an edit to '{rel}' because it's outside your project folder.)"
+        self.answered.emit(text or "(no answer)", edit)

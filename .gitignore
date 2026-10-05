@@ -1,0 +1,6 @@
+.env
+settings.json
+__pycache__/
+*.pyc
+.spider_backups/
+.pytest_cache/
