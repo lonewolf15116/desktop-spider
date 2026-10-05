@@ -259,7 +259,7 @@ class SpiderWindow(QWidget):
             am.addAction(f"Shortcut: {hk.label}  (change \"hotkey\" in settings)").setEnabled(False)
         elif hk and hk.taken:
             am.addAction("Shortcut: none free (" + ", ".join(hk.taken) + " are taken)").setEnabled(False)
-        am.addAction(f"Hide spider (tray{' and ' + hk.label if hk and hk.ok else ''} bring it back)"
+        am.addAction(f"Hide spider (the tray icon{' or ' + hk.label if hk and hk.ok else ''} brings it back)"
                      if self.isVisible() else "Show spider",
                      self.toggle_visible).setEnabled(bool(self.tray) or not self.isVisible())
         dm = m.addMenu("Devices")
