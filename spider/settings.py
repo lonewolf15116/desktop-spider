@@ -19,6 +19,7 @@ DEFAULTS = {
     "anthropic_model": "claude-sonnet-5-5",
     "long_session_hours": 3,
     "focus": False,
+    "learning": True,               # may the spider ask to remember things?
 }
 
 

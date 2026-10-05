@@ -1,4 +1,4 @@
-"""The speech bubble: short lines, the chat box, and the approve/reject panel."""
+"""The speech bubble: short lines, the chat box, the approve/reject panel and memory offers."""
 from PyQt5.QtCore import QRect, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 import html
@@ -18,6 +18,10 @@ STYLES = {
         QPushButton {{ border-radius: 8px; padding: 6px 12px; font-size: 9.5pt; }}
         QPushButton#yes {{ background: #f5c542; color: #1b1505; border: none; font-weight: 600; }}
         QPushButton#no {{ background: transparent; color: #e9e4d8; border: 1px solid rgba(255,255,255,60); }}
+        QFrame#memrow {{ background: rgba(245,197,66,22); border: 1px solid rgba(245,197,66,120); border-radius: 8px; }}
+        QLabel#memtext {{ color: #f7e7b5; font-size: 9pt; }}
+        QPushButton#memyes {{ background: #f5c542; color: #1b1505; border: none; padding: 4px 10px; font-size: 9pt; }}
+        QPushButton#memno {{ background: transparent; color: #e9e4d8; border: none; padding: 4px 8px; font-size: 9pt; }}
     """,
     "nib": """
         QFrame#card {{ background: #fbf7ef; border: 2px solid #111111; border-radius: 16px; }}
@@ -31,6 +35,10 @@ STYLES = {
         QPushButton {{ border-radius: 10px; padding: 6px 12px; font-size: 9.5pt; border: 2px solid #111; }}
         QPushButton#yes {{ background: #f5c542; color: #111; font-weight: 700; }}
         QPushButton#no {{ background: #ffffff; color: #111; }}
+        QFrame#memrow {{ background: #fff3c4; border: 2px dashed #111; border-radius: 10px; }}
+        QLabel#memtext {{ color: #111; font-size: 9pt; }}
+        QPushButton#memyes {{ background: #f5c542; color: #111; padding: 4px 10px; font-size: 9pt; }}
+        QPushButton#memno {{ background: transparent; color: #111; border: none; padding: 4px 8px; font-size: 9pt; }}
     """,
 }
 
@@ -39,6 +47,8 @@ class Bubble(QWidget):
     asked = pyqtSignal(str)
     approved = pyqtSignal()
     rejected = pyqtSignal()
+    mem_yes = pyqtSignal(str)
+    mem_no = pyqtSignal(str)
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -72,7 +82,26 @@ class Bubble(QWidget):
         self.buttons = QWidget()
         self.buttons.setLayout(row)
         row.setContentsMargins(0, 0, 0, 0)
-        for w in (self.name, self.text, self.answer, self.diff, self.input, self.buttons):
+        # "Should I remember …?" row: shown alongside an answer, one fact at a time
+        self.memrow = QFrame(objectName="memrow")
+        mlay = QVBoxLayout(self.memrow)
+        mlay.setContentsMargins(10, 6, 8, 6)
+        mlay.setSpacing(4)
+        self.memtext = QLabel(objectName="memtext", wordWrap=True)
+        mbtns = QHBoxLayout()
+        mbtns.setContentsMargins(0, 0, 0, 0)
+        self.memyes = QPushButton("Remember", objectName="memyes")
+        self.memno = QPushButton("Not now", objectName="memno")
+        self.memyes.clicked.connect(lambda: self.mem_yes.emit(self.mem_fact))
+        self.memno.clicked.connect(lambda: self.mem_no.emit(self.mem_fact))
+        mbtns.addStretch(1)
+        mbtns.addWidget(self.memno)
+        mbtns.addWidget(self.memyes)
+        mlay.addWidget(self.memtext)
+        mlay.addLayout(mbtns)
+        self.memrow.hide()
+        self.mem_fact = ""
+        for w in (self.name, self.text, self.answer, self.diff, self.memrow, self.input, self.buttons):
             lay.addWidget(w)
         self.hide_timer = QTimer(self, singleShot=True)
         self.hide_timer.timeout.connect(self._auto_hide)
@@ -92,6 +121,7 @@ class Bubble(QWidget):
         if self.mode in ("chat", "approve"):
             return False
         self.mode = "say"
+        self.memrow.hide()
         self.text.setText(line)
         self._only(self.text)
         self._show()
@@ -158,8 +188,27 @@ class Bubble(QWidget):
                 rows.append(f'<div style="color:#8a93a0">{esc}</div>')
         return '<pre style="font-family:Consolas,monospace;font-size:8.5pt;margin:0">' + "".join(rows) + "</pre>"
 
+    def offer_memory(self, question_line, fact):
+        """Show 'Should I remember: <fact>?' under whatever is open. Opens chat if nothing is."""
+        self.mem_fact = fact
+        self.memtext.setText(f"{question_line}\n“{fact}”")
+        if self.mode not in ("chat", "approve"):
+            self.mode = "chat"
+            self.hide_timer.stop()
+            self._only(self.input)
+        self.memrow.show()
+        self._show()
+
+    def clear_memory_offer(self):
+        self.mem_fact = ""
+        self.memrow.hide()
+        if self.isVisible():
+            self._show()
+
     def close_bubble(self):
         self.mode = "hidden"
+        self.memrow.hide()
+        self.mem_fact = ""
         self.input.setEnabled(True)
         self.hide()
 

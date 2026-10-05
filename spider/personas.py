@@ -80,6 +80,12 @@ class Vesper(Persona):
         "long_session": "You've been weaving for {hours} hours. Rest your hands.",
         "idle": ["The web is quiet.", "Still threads. Good threads.", "I'm watching."],
         "error": "Something tangled: {msg}",
+        "remember_offer": "Shall I keep this thread?",
+        "noticed_offer": "I've noticed something. Shall I keep it?",
+        "remembered": "Kept.",
+        "not_now": "Let it drift, then.",
+        "secret_refused": "That looks like a secret. Some threads I won't keep.",
+        "already_known": "I already hold that thread.",
     }
 
     def draw(self, p, w, h, st, t, corner, accent):
@@ -266,6 +272,12 @@ class Nib(Persona):
         "long_session": "{hours} hours straight! Water break? I'll guard the code.",
         "idle": ["*blinks*", "Still here!", "Psst. Commit lately?"],
         "error": "Eek, that didn't work: {msg}",
+        "remember_offer": "Want me to remember that?",
+        "noticed_offer": "I spotted a pattern! Remember it?",
+        "remembered": "Got it, remembered!",
+        "not_now": "No worries, forgotten already.",
+        "secret_refused": "Ooh, that looks like a secret. I'm not keeping that one!",
+        "already_known": "I knew that one already!",
     }
 
     def draw(self, p, w, h, st, t, corner, accent):

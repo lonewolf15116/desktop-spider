@@ -3,6 +3,8 @@
 Edits come back as a proposal only. Nothing is written until you approve it.
 """
 import difflib
+
+from .memory import extract_proposals
 import os
 import re
 import time
@@ -17,7 +19,11 @@ If, and only if, a code change would clearly help (for example they ask for a fi
 ```edit path=<path relative to the project folder>
 <the complete new contents of that file>
 ```
-Put your short explanation outside the block. Never say you have changed anything: the user reviews and approves every edit themselves."""
+Put your short explanation outside the block. Never say you have changed anything: the user reviews and approves every edit themselves.
+
+Learning about the user: if they reveal something lasting that would help you help them later (how they like answers, tools and libraries they prefer, what their projects are, how they work), you may end your reply with up to two lines of the form
+remember: <one short fact, written about the user, e.g. "Prefers pytest over unittest">
+Only propose facts they actually stated or clearly showed. Never propose secrets, keys, passwords, health, money or anything about other people. The user decides whether each fact is kept."""
 
 
 TREE_SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv", "env", ".spider_backups",
@@ -120,10 +126,12 @@ def apply_edit(folder, target, new_text):
 
 class Ask(QThread):
     answered = pyqtSignal(str, object)   # text, edit dict or None
+    learned = pyqtSignal(list)           # facts the model suggests remembering (not yet saved)
     failed = pyqtSignal(str)
 
-    def __init__(self, provider, key, model, voice, history, question, context, folder):
+    def __init__(self, provider, key, model, voice, history, question, context, folder, memory_text=""):
         super().__init__()
+        self.memory_text = memory_text
         self.provider, self.key, self.model, self.voice = provider, key, model, voice
         self.history, self.question, self.context, self.folder = history, question, context, folder
 
@@ -143,7 +151,8 @@ class Ask(QThread):
         msgs = list(self.history[-8:])
         msgs.append({"role": "user", "content": f"{self.context}\n\n---\n\n{self.question}"})
         try:
-            text = self._call(self.voice + "\n\n" + RULES, msgs).strip()
+            system = self.voice + ("\n\n" + self.memory_text if self.memory_text else "") + "\n\n" + RULES
+            text = self._call(system, msgs).strip()
         except ImportError:
             pkg = "anthropic" if self.provider == "anthropic" else "openai"
             self.failed.emit(f"the '{pkg}' package isn't installed (pip install {pkg})")
@@ -151,6 +160,9 @@ class Ask(QThread):
         except Exception as e:  # network, auth, model name…
             self.failed.emit(str(e)[:300])
             return
+        text, facts = extract_proposals(text)
+        if facts:
+            self.learned.emit(facts)
         edit = None
         m = EDIT_RE.search(text)
         if m:

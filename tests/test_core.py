@@ -116,3 +116,67 @@ def test_context_includes_tree_and_readme(tmp_path):
     ctx = build_context(str(tmp_path), "", "", None)
     assert "app/main.py" in ctx and "Cited QA over ML papers" in ctx and "x.pyc" not in ctx
     assert "Choose project folder" in build_context("", "", "", None)
+
+
+# ── memory (stage 1)
+def test_memory_add_dedup_secret_forget(tmp_path):
+    from spider.memory import Memory
+    m = Memory(str(tmp_path / "memory.json"))
+    assert m.add("Prefers pytest over unittest") == (True, "ok")
+    assert m.add("prefers pytest over unittest.")[1] == "duplicate"
+    assert m.add("my api key is sk-abcdefghijklmnop1234")[1] == "secret"
+    assert m.add("Password: hunter2")[1] == "secret"
+    assert m.items[0]["kind"] == "preference" and m.items[0]["source"] == "told"
+    m2 = Memory(str(tmp_path / "memory.json"))          # persisted
+    assert len(m2.items) == 1 and "pytest" in m2.as_prompt()
+    assert m2.forget(m2.items[0]["id"]) and m2.as_prompt() == ""
+
+
+def test_extract_proposals_and_explicit():
+    from spider.memory import explicit_request, extract_proposals
+    text, facts = extract_proposals("Use fixtures.\nremember: Prefers pytest\nremember: token is sk-abcdefghijklmnopqrst\n")
+    assert text == "Use fixtures." and facts == ["Prefers pytest"]
+    assert explicit_request("remember that I like short answers.") == "I like short answers"
+    assert explicit_request("Remember: PaperTrail uses FastAPI") == "PaperTrail uses FastAPI"
+    assert explicit_request("how do I remember things in python?") is None
+
+
+def test_stats_notice_hours_and_project(tmp_path):
+    import time as _t
+    from spider.memory import Memory, Stats
+    st = Stats(str(tmp_path / "stats.json"))
+    mem = Memory(str(tmp_path / "memory.json"))
+    for i in range(45):
+        st.record_save("/x/PaperTrail", _t.strptime(f"2026-10-0{1 + i % 3} 22:{i % 60:02d}", "%Y-%m-%d %H:%M"))
+    first = st.suggestion(mem, today="2026-10-05")
+    assert first and "between" in first
+    assert st.suggestion(mem, today="2026-10-05") is None           # one offer per day
+    second = st.suggestion(mem, today="2026-10-06")
+    assert second == "Works on the PaperTrail project regularly"
+    assert st.suggestion(mem, today="2026-10-07") is None           # never asks twice
+
+
+def test_memory_sent_with_question(tmp_path, monkeypatch):
+    import sys
+    import types
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def create(self, model, messages):
+            seen["system"] = messages[0]["content"]
+            msg = types.SimpleNamespace(content="Sure.\nremember: Prefers short answers")
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeClient))
+    from spider.brain import Ask
+    a = Ask("openai", "k", "m", "You are Vesper.", [], "q", "ctx", str(tmp_path),
+            memory_text="What you know about the user:\n- Uses Windows")
+    got = {}
+    a.learned.connect(lambda f: got.update(facts=f))
+    a.answered.connect(lambda t, e: got.update(text=t))
+    a.run()
+    assert "- Uses Windows" in seen["system"] and "remember:" in seen["system"]
+    assert got == {"facts": ["Prefers short answers"], "text": "Sure."}

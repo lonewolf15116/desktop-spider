@@ -16,6 +16,8 @@ from . import settings as cfg
 from .brain import Ask, apply_edit, build_context
 from .bubble import Bubble
 from .legs import Legs
+from .memory import Memory, Stats, explicit_request, looks_secret
+from .memory_panel import MemoryPanel
 from .personas import PERSONAS, SpiderState
 
 SIZE = 200
@@ -46,8 +48,19 @@ class SpiderWindow(QWidget):
         self.bubble.rejected.connect(self.reject)
         self._restyle()
 
+        # memory: what the spider knows about you (each item approved by you)
+        self.memory = Memory()
+        self.stats = Stats()
+        self.mem_queue = []          # [(fact, source)] waiting for your yes/no
+        self.bubble.mem_yes.connect(self.memory_yes)
+        self.bubble.mem_no.connect(self.memory_no)
+        self.panel = MemoryPanel(self.memory)
+        self.panel.learning_toggled.connect(lambda on: self._set("learning", on))
+        self._restyle()
+
         self.legs = Legs(self.s, self)
         self.legs.leg_changed.connect(self.on_leg)
+        self.legs.file_saved.connect(self.on_file_saved)
         self.legs.start()
 
         self.anim = QTimer(self)
@@ -88,6 +101,9 @@ class SpiderWindow(QWidget):
 
     def _restyle(self):
         self.bubble.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"))
+        if hasattr(self, "panel"):
+            label = cfg.PROVIDERS[cfg.provider(self.s)][1]
+            self.panel.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"), label)
 
     def save(self):
         cfg.save(self.s)
@@ -171,6 +187,7 @@ class SpiderWindow(QWidget):
             a.triggered.connect(lambda _, p=prov: self.set_provider(p))
             grp3.addAction(a)
             bm.addAction(a)
+        m.addAction(f"Memory ({len(self.memory.items)})…", self.open_memory)
         f = QAction("Focus mode", m, checkable=True, checked=self.st.focus)
         f.triggered.connect(self.toggle_focus)
         m.addAction(f)
@@ -220,12 +237,75 @@ class SpiderWindow(QWidget):
         else:
             self.speak("welcome", important=True)
 
+    # ── memory
+    def open_memory(self):
+        self._restyle()
+        self.panel.set_learning(bool(self.s.get("learning", True)))
+        self.panel.refresh()
+        geo = QApplication.primaryScreen().availableGeometry()
+        sx, sy = self.corner
+        x = self.x() - self.panel.width() - 10 if sx > 0 else self.x() + SIZE + 10
+        y = geo.bottom() - self.panel.height() - 40 if sy > 0 else geo.top() + 40
+        self.panel.move(max(geo.left(), x), max(geo.top(), y))
+        self.panel.show()
+        self.panel.raise_()
+        self.panel.activateWindow()
+
+    def on_file_saved(self, _path):
+        if self.s.get("learning", True):
+            self.stats.record_save(self.legs.folder)
+
+    def offer(self, fact, source="told"):
+        """Queue a fact; you decide in the bubble whether it's kept."""
+        if not fact or self.memory.has(fact) or any(f == fact for f, _ in self.mem_queue):
+            return
+        self.mem_queue.append((fact, source))
+        if not self.bubble.mem_fact:
+            self._next_offer()
+
+    def _next_offer(self):
+        if not self.mem_queue:
+            self.bubble.clear_memory_offer()
+            return
+        fact, source = self.mem_queue[0]
+        line = self.persona.say("noticed_offer" if source == "noticed" else "remember_offer")
+        self.bubble.offer_memory(line, fact)
+
+    def _settle_offer(self, line):
+        self.mem_queue = self.mem_queue[1:]
+        self.bubble.memtext.setText(line)
+        self.bubble.memyes.hide()
+        self.bubble.memno.hide()
+
+        def done():
+            self.bubble.memyes.show()
+            self.bubble.memno.show()
+            self._next_offer()
+        QTimer.singleShot(1300, done)
+
+    def memory_yes(self, fact):
+        source = self.mem_queue[0][1] if self.mem_queue else "told"
+        ok, why = self.memory.add(fact, source=source)
+        line = self.persona.say("remembered") if ok else self.persona.say(
+            {"secret": "secret_refused", "duplicate": "already_known"}.get(why, "not_now"))
+        if self.panel.isVisible():
+            self.panel.refresh()
+        self._settle_offer(line)
+
+    def memory_no(self, _fact):
+        self._settle_offer(self.persona.say("not_now"))
+
     def every_minute(self):
         hours = max(1, int(self.s.get("long_session_hours", 3)))
         elapsed_h = (time.time() - self.t0) / 3600
         if elapsed_h >= hours * (self.long_notes + 1):
             self.long_notes += 1
             self.speak("long_session", hours=hours * self.long_notes)
+        if self.s.get("learning", True) and not self.st.focus and self.st.mode == "idle" \
+                and not self.bubble.isVisible():
+            noticed = self.stats.suggestion(self.memory)
+            if noticed:
+                self.offer(noticed, source="noticed")
 
     # ── code route: legs
     def on_leg(self, leg, state, info):
@@ -270,6 +350,14 @@ class SpiderWindow(QWidget):
         self.bubble.open_chat(intro)
 
     def ask(self, question):
+        fact = explicit_request(question)
+        if fact:                     # "remember that …" is handled locally, no model call
+            if looks_secret(fact):
+                self.bubble.show_answer(self.persona.say("secret_refused"))
+            else:
+                self.bubble.show_answer(f"*{fact}*")
+                self.offer(fact, source="told")
+            return
         prov = cfg.provider(self.s)
         key = cfg.api_key(prov)
         if not key:
@@ -281,7 +369,8 @@ class SpiderWindow(QWidget):
         self.bubble.show_thinking(self.persona.say("thinking"))
         ctx = build_context(self.legs.folder, self.legs.last_file, self.legs.last_output, self.legs.last_syntax)
         self.worker = Ask(prov, key, cfg.model_for(self.s), self.persona.voice, self.history, question, ctx,
-                          self.legs.folder)
+                          self.legs.folder, memory_text=self.memory.as_prompt())
+        self.worker.learned.connect(self.on_learned)
         self.worker.answered.connect(lambda text, edit, q=question: self.on_answer(q, text, edit))
         self.worker.failed.connect(self.on_fail)
         self.worker.start()
@@ -297,6 +386,9 @@ class SpiderWindow(QWidget):
         label = cfg.PROVIDERS[prov][1]
         self.bubble.say(f"{label} · {cfg.model_for(self.s)}", 3500)
 
+    def on_learned(self, facts):
+        self._learned = [] if not self.s.get("learning", True) else facts
+
     def on_answer(self, question, text, edit):
         self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
         self.history = self.history[-12:]
@@ -307,6 +399,9 @@ class SpiderWindow(QWidget):
         else:
             self.set_mode("idle")
             self.bubble.show_answer(text)
+        for fact in getattr(self, "_learned", []):
+            self.offer(fact, source="told")
+        self._learned = []
 
     def on_fail(self, msg):
         self.set_mode("idle")
