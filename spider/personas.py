@@ -33,7 +33,7 @@ def _a(color, alpha):
 class Persona:
     key = ""
     name = ""
-    voice = ""                      # system-prompt voice for Claude
+    voice = ""                      # system-prompt voice for the model
     lines = {}
 
     def say(self, event, **kw):
@@ -67,7 +67,7 @@ class Vesper(Persona):
     lines = {
         "welcome": "I'm here. Show me where to weave.",
         "no_folder": "Show me a folder to watch. Right-click me.",
-        "no_key": "I need a key to speak with Claude. Put it in the .env file.",
+        "no_key": "I need your {provider} key to speak. Put it after {var}= in the .env file.",
         "pass": ["All threads hold.", "All threads hold. {n} of {n}."],
         "fail": "One thread snapped. {test}, line {line}.",
         "fail_noline": "One thread snapped. {test}.",
@@ -253,7 +253,7 @@ class Nib(Persona):
     lines = {
         "welcome": "Hi! I'm Nib. Point me at a project?",
         "no_folder": "Right-click me and pick a project folder!",
-        "no_key": "I need an API key to think out loud. It goes in the .env file.",
+        "no_key": "I need your {provider} key to think out loud! Add it after {var}= in .env.",
         "pass": ["Green! {n} passing. Wiggle earned.", "All green! *wiggle*"],
         "fail": "Oops, {test} tripped at line {line}. Want me to look?",
         "fail_noline": "Oops, {test} tripped. Want me to look?",

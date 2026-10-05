@@ -60,3 +60,47 @@ def test_personas_have_every_line():
     for p in PERSONAS.values():
         for e in events:
             assert p.say(e, n=3, test="t", line=1, file="f.py", hours=3, msg="m"), (p.key, e)
+
+
+def test_provider_defaults_and_keys(tmp_path, monkeypatch):
+    from spider import settings as cfg
+    monkeypatch.setattr(cfg, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-test-openai\nANTHROPIC_API_KEY=\n")
+    s = dict(cfg.DEFAULTS)
+    assert cfg.provider(s) == "openai" and cfg.model_for(s) == "gpt-5-mini"
+    assert cfg.api_key("openai") == "sk-test-openai"
+    assert cfg.api_key("anthropic") == ""
+    s["provider"] = "anthropic"
+    assert cfg.model_for(s) == "claude-sonnet-5-5"
+    s["provider"] = "nonsense"
+    assert cfg.provider(s) == "openai"
+
+
+def test_openai_call_parses_edit(tmp_path, monkeypatch):
+    import sys
+    import types
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    reply = "Subtraction bug.\n```edit path=calc.py\ndef add(a, b):\n    return a + b\n```"
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, api_key):
+            seen["key"] = api_key
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def create(self, model, messages):
+            seen["model"], seen["system"] = model, messages[0]["content"]
+            msg = types.SimpleNamespace(content=reply)
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeClient))
+    from spider.brain import Ask
+    a = Ask("openai", "sk-x", "gpt-5-mini", "You are Nib.", [], "fix it", "ctx", str(tmp_path))
+    out = {}
+    a.answered.connect(lambda text, edit: out.update(text=text, edit=edit))
+    a.run()     # run synchronously, no thread
+    assert seen["key"] == "sk-x" and seen["model"] == "gpt-5-mini" and "You are Nib." in seen["system"]
+    assert out["text"] == "Subtraction bug." and out["edit"]["rel"] == "calc.py"
+    assert "+    return a + b" in out["edit"]["diff"]

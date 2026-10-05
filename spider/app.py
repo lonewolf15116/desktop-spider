@@ -1,6 +1,6 @@
-"""The spider window: lives in a screen corner, draws the persona, and wires legs, bubble and Claude together.
+"""The spider window: lives in a screen corner, draws the persona, and wires legs, bubble and the model together.
 
-Routes (from Prompt Spider):  code → legs (free, instant) · claude → questions and fixes · you → approvals.
+Routes (from Prompt Spider):  code → legs (free, instant) · model (OpenAI or Claude) → questions and fixes · you → approvals.
 White core: nothing in your project is changed unless you press Approve.
 """
 import os
@@ -163,6 +163,14 @@ class SpiderWindow(QWidget):
             a.triggered.connect(lambda _, l=level: self._set("chattiness", l))
             grp2.addAction(a)
             cm.addAction(a)
+        bm = m.addMenu("Brain")
+        grp3 = QActionGroup(bm)
+        for prov, (_, label) in cfg.PROVIDERS.items():
+            a = QAction(f"{label}  ({self.s.get(prov + '_model')})", bm, checkable=True,
+                        checked=(cfg.provider(self.s) == prov))
+            a.triggered.connect(lambda _, p=prov: self.set_provider(p))
+            grp3.addAction(a)
+            bm.addAction(a)
         f = QAction("Focus mode", m, checkable=True, checked=self.st.focus)
         f.triggered.connect(self.toggle_focus)
         m.addAction(f)
@@ -223,7 +231,7 @@ class SpiderWindow(QWidget):
     def on_leg(self, leg, state, info):
         self.st.legs[leg] = state
         if self.st.mode in ("thinking", "waiting"):
-            return      # don't interrupt Claude or a pending approval
+            return      # don't interrupt the model or a pending approval
         if leg == "syntax" and state == "fail":
             self.set_mode("fail")
             self.speak("syntax", file=info["file"], line=info["line"])
@@ -248,7 +256,7 @@ class SpiderWindow(QWidget):
                     self.seen_no_tests = True
                     self.speak("no_tests")
 
-    # ── claude route
+    # ── model route
     def toggle_chat(self):
         if self.bubble.mode == "approve":
             self.bubble._show()
@@ -257,25 +265,37 @@ class SpiderWindow(QWidget):
             self.bubble.close_bubble()
             return
         intro = ""
-        if not cfg.api_key():
-            intro = self.persona.say("no_key")
+        if not cfg.api_key(cfg.provider(self.s)):
+            intro = self._no_key_line()
         self.bubble.open_chat(intro)
 
     def ask(self, question):
-        key = cfg.api_key()
+        prov = cfg.provider(self.s)
+        key = cfg.api_key(prov)
         if not key:
-            self.bubble.open_chat(self.persona.say("no_key"))
+            self.bubble.open_chat(self._no_key_line())
             return
         if self.worker and self.worker.isRunning():
             return
         self.set_mode("thinking")
         self.bubble.show_thinking(self.persona.say("thinking"))
         ctx = build_context(self.legs.folder, self.legs.last_file, self.legs.last_output, self.legs.last_syntax)
-        self.worker = Ask(key, self.s.get("model"), self.persona.voice, self.history, question, ctx,
+        self.worker = Ask(prov, key, cfg.model_for(self.s), self.persona.voice, self.history, question, ctx,
                           self.legs.folder)
         self.worker.answered.connect(lambda text, edit, q=question: self.on_answer(q, text, edit))
         self.worker.failed.connect(self.on_fail)
         self.worker.start()
+
+    def _no_key_line(self):
+        var, label = cfg.PROVIDERS[cfg.provider(self.s)]
+        return self.persona.say("no_key", var=var, provider=label)
+
+    def set_provider(self, prov):
+        self.s["provider"] = prov
+        self.save()
+        self.history = []
+        label = cfg.PROVIDERS[prov][1]
+        self.bubble.say(f"{label} · {cfg.model_for(self.s)}", 3500)
 
     def on_answer(self, question, text, edit):
         self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": text}]

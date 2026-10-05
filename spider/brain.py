@@ -1,4 +1,4 @@
-"""The Claude route: answers questions with the current file and test output as context.
+"""The model route (OpenAI or Claude): answers questions with the current file and test output as context.
 
 Edits come back as a proposal only. Nothing is written until you approve it.
 """
@@ -84,24 +84,32 @@ class Ask(QThread):
     answered = pyqtSignal(str, object)   # text, edit dict or None
     failed = pyqtSignal(str)
 
-    def __init__(self, key, model, voice, history, question, context, folder):
+    def __init__(self, provider, key, model, voice, history, question, context, folder):
         super().__init__()
-        self.key, self.model, self.voice = key, model, voice
+        self.provider, self.key, self.model, self.voice = provider, key, model, voice
         self.history, self.question, self.context, self.folder = history, question, context, folder
 
-    def run(self):
-        try:
+    def _call(self, system, msgs):
+        if self.provider == "anthropic":
             import anthropic
-        except ImportError:
-            self.failed.emit("the 'anthropic' package isn't installed (pip install anthropic)")
-            return
-        try:
             client = anthropic.Anthropic(api_key=self.key)
-            msgs = list(self.history[-8:])
-            msgs.append({"role": "user", "content": f"{self.context}\n\n---\n\n{self.question}"})
-            resp = client.messages.create(model=self.model, max_tokens=4000,
-                                          system=self.voice + "\n\n" + RULES, messages=msgs)
-            text = "".join(getattr(b, "text", "") for b in resp.content).strip()
+            resp = client.messages.create(model=self.model, max_tokens=4000, system=system, messages=msgs)
+            return "".join(getattr(b, "text", "") for b in resp.content)
+        import openai
+        client = openai.OpenAI(api_key=self.key)
+        resp = client.chat.completions.create(
+            model=self.model, messages=[{"role": "system", "content": system}] + msgs)
+        return resp.choices[0].message.content or ""
+
+    def run(self):
+        msgs = list(self.history[-8:])
+        msgs.append({"role": "user", "content": f"{self.context}\n\n---\n\n{self.question}"})
+        try:
+            text = self._call(self.voice + "\n\n" + RULES, msgs).strip()
+        except ImportError:
+            pkg = "anthropic" if self.provider == "anthropic" else "openai"
+            self.failed.emit(f"the '{pkg}' package isn't installed (pip install {pkg})")
+            return
         except Exception as e:  # network, auth, model name…
             self.failed.emit(str(e)[:300])
             return

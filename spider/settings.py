@@ -14,7 +14,9 @@ DEFAULTS = {
     "watch_folder": "",             # project the legs watch
     "test_command": "python -m pytest -q -x -p no:cacheprovider",
     "legs": {"tests": True, "syntax": True},
-    "model": "claude-sonnet-5-5",
+    "provider": "openai",           # "openai" or "anthropic"
+    "openai_model": "gpt-5-mini",
+    "anthropic_model": "claude-sonnet-5-5",
     "long_session_hours": 3,
     "focus": False,
 }
@@ -41,16 +43,29 @@ def save(data):
         pass
 
 
-def api_key():
-    """ANTHROPIC_API_KEY from the environment, or from a .env file next to the app."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+PROVIDERS = {"openai": ("OPENAI_API_KEY", "OpenAI"), "anthropic": ("ANTHROPIC_API_KEY", "Claude")}
+
+
+def provider(data):
+    p = data.get("provider", "openai")
+    return p if p in PROVIDERS else "openai"
+
+
+def model_for(data):
+    return data.get(f"{provider(data)}_model") or DEFAULTS[f"{provider(data)}_model"]
+
+
+def api_key(prov="openai"):
+    """The provider's key from the environment, or from a .env file next to the app."""
+    var = PROVIDERS.get(prov, PROVIDERS["openai"])[0]
+    key = os.environ.get(var, "").strip()
     if key:
         return key
     try:
         with open(ENV_PATH, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("ANTHROPIC_API_KEY="):
+                if line.startswith(var + "="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
         pass
