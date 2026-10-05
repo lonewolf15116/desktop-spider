@@ -427,4 +427,245 @@ class Nib(Persona):
         return path
 
 
-PERSONAS = {"vesper": Vesper(), "nib": Nib()}
+
+
+
+# ───────────────────────────────────────────────────────────── Zip
+class Zip(Persona):
+    """An original acrobatic jumping spider: big glossy eyes, charcoal fuzz, electric-teal markings.
+
+    Drops in on a silk line, crouches before it pounces, flips when your tests pass.
+    """
+    key = "zip"
+    name = "Zip"
+    TEAL = QColor("#22d3c5")
+    EMBER = QColor("#ff8a3d")
+    voice = ("You are Zip, a quick, upbeat and confident coding companion with an acrobat's energy. "
+             "Keep replies punchy and practical: lead with the fix or the answer, then the why in a line "
+             "or two. Celebrate wins briefly. When you're unsure, say so straight away.")
+    lines = {
+        "welcome": "Zip here. Point me at a project and I'll keep watch.",
+        "no_folder": "Give me a project folder to guard. Right-click me.",
+        "no_key": "I need your {provider} key to jump in. Put it after {var}= in the .env file.",
+        "pass": ["All {n} green. Stuck the landing!", "Clean run. {n} passing."],
+        "fail": "{test} fell at line {line}. Want me to pounce on it?",
+        "fail_noline": "{test} fell. Want me to pounce on it?",
+        "syntax": "Tripwire in {file}, line {line}.",
+        "no_tests": "No tests to guard yet. Want to write the first one?",
+        "thinking": "On it…",
+        "needs_approval": "Fix is ready. Your call: drop it in?",
+        "approved": "In. Running the tests…",
+        "rejected": "Scrapped. Nothing touched.",
+        "long_session": "{hours} hours on the wall. Take a breather, I've got watch.",
+        "idle": ["Scanning…", "All quiet on the web.", "Ready when you are."],
+        "error": "Missed the jump: {msg}",
+        "remember_offer": "Worth remembering?",
+        "noticed_offer": "Spotted a pattern. Keep it?",
+        "remembered": "Locked in.",
+        "not_now": "Dropped it.",
+        "secret_refused": "That looks like a secret. Not keeping it.",
+        "already_known": "Already got that one.",
+        "reminder": "Heads up: {text}",
+        "reminder_set": "Got it. I'll ping you {when}: {text}",
+        "noted": "Noted.",
+        "welcome_back": "Back on the wall. We were on {project}.",
+        "reading": "Reading the paper…",
+        "synced": "Memory synced across your devices.",
+        "phone_on": "Phone link's up. Come find me.",
+    }
+
+    def draw(self, p, w, h, st, t, corner, accent):
+        sx, sy = corner
+        since = t - st.mode_since
+        teal, ember = QColor(self.TEAL), QColor(self.EMBER)
+        cx = w * 0.5 + sx * w * 0.06
+        ground = h * 0.80 if sy > 0 else h * 0.86
+        body_y = ground - 52
+        y_off, rot, squash, crouch = 0.0, 0.0, 1.0, 0.0
+        silk_from_top = False
+
+        # entrance: drop in on a silk line
+        if t < 1.3:
+            u = min(1.0, t / 1.3)
+            ease = 1 - (1 - u) ** 3
+            y_off = -(body_y + 60) * (1 - ease)
+            silk_from_top = True
+        elif st.focus:
+            crouch = 10
+        elif st.mode == "pass" and since < 1.1:
+            u = since / 0.9
+            if u < 1:
+                y_off = -46 * 4 * u * (1 - u)
+                rot = 360 * u * (1 if sx < 0 else -1)
+                squash = 1.0
+            else:
+                squash = 1 - 0.18 * math.sin((since - 0.9) / 0.2 * math.pi)
+        elif st.mode == "thinking":
+            crouch = 8 + 2 * math.sin(t * 6)
+        elif st.mode == "fail":
+            crouch = 6
+        elif st.mode == "running":
+            crouch = -4
+        else:
+            hop_t = t % 13.0
+            if hop_t < 0.45:
+                u = hop_t / 0.45
+                y_off = -18 * 4 * u * (1 - u)
+            y_off += math.sin(t * 2.0) * 1.2
+
+        breathe = 1 + 0.015 * math.sin(t * 2.4)
+        by = body_y + crouch + y_off
+
+        # threads: entrance silk, thinking (blue), waiting (gold)
+        if silk_from_top:
+            p.setPen(QPen(_a("#dfe9ee", 170), 1.2))
+            p.drawLine(QPointF(cx, 0), QPointF(cx, by - 30))
+        if st.mode in ("thinking", "waiting") and not st.focus:
+            col = ROUTE_COLORS["claude" if st.mode == "thinking" else "you"]
+            pulse = 0.5 + 0.5 * math.sin(t * 3)
+            top = QPointF(cx - sx * 18, 0 if sy > 0 else h)
+            p.setPen(QPen(_a(col, 70 + 60 * pulse), 4))
+            p.drawLine(QPointF(cx, by - 28), top)
+            p.setPen(QPen(_a(col, 210), 1.3))
+            p.drawLine(QPointF(cx, by - 28), top)
+            if st.mode == "waiting":
+                drop = QPointF(cx - sx * 9, by - 50 + math.sin(t * 2.5) * 3)
+                p.setPen(Qt.NoPen)
+                p.setBrush(_a(col, 230))
+                p.drawEllipse(drop, 4 + 1.5 * pulse, 4 + 1.5 * pulse)
+
+        # ground shadow
+        p.setPen(Qt.NoPen)
+        shadow = max(0.25, 1 - abs(y_off) / 90)
+        p.setBrush(_a("#000000", 60 * shadow))
+        p.drawEllipse(QPointF(cx, ground + 4), 46 * shadow, 7 * shadow)
+
+        p.save()
+        p.translate(cx, by)
+        p.rotate(rot)
+        p.scale(breathe, breathe * squash)
+        if st.focus:
+            p.setOpacity(0.45)
+
+        # legs: four a side, segmented, teal bands at the knees
+        tucked = st.focus
+        for side in (-1, 1):
+            for i in range(4):
+                base = QPointF(side * (20 + i * 3), -4 + i * 6)
+                spread = (34 + i * 7) * (0.55 if tucked else 1.0)
+                tap = -6 if st.mode == "running" and int(t * 8) % 8 == (i + (0 if side < 0 else 4)) else 0
+                knee = QPointF(side * (spread + 2 + i * 4), -26 + i * 6 - crouch * 0.6 + tap)
+                foot_y = (ground - by) - 2 if not tucked and abs(y_off) < 2 else 30 + i * 4
+                foot = QPointF(side * (spread + 6 + i * 12), foot_y + tap)
+                path = QPainterPath(base)
+                path.lineTo(knee)
+                path.lineTo(foot)
+                p.setBrush(Qt.NoBrush)
+                pen = QPen(QColor("#1b1f25"), 6.2 - i * 0.5)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen)
+                p.drawPath(path)
+                pen = QPen(QColor("#3a414c"), 3.6 - i * 0.3)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen)
+                p.drawPath(path)
+                p.setPen(Qt.NoPen)
+                p.setBrush(teal)
+                p.drawEllipse(knee, 3.0, 3.0)
+
+        # abdomen peeking behind, with teal chevrons
+        abdo = QRectF(-30, -62, 60, 50)
+        g = QRadialGradient(QPointF(-8, -50), 40)
+        g.setColorAt(0, QColor("#3a414c"))
+        g.setColorAt(1, QColor("#15181d"))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(g))
+        p.drawEllipse(abdo)
+        p.setPen(QPen(_a(teal, 220), 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        for k in range(3):
+            yy = -54 + k * 9
+            chev = QPainterPath(QPointF(-12 + k * 2, yy))
+            chev.lineTo(0, yy + 5)
+            chev.lineTo(12 - k * 2, yy)
+            p.drawPath(chev)
+
+        # head (cephalothorax): fuzzy rim, charcoal gradient
+        head = QRectF(-40, -34, 80, 66)
+        rng = random.Random(11)
+        p.setPen(QPen(QColor("#2b3139"), 2, Qt.SolidLine, Qt.RoundCap))
+        for k in range(72):
+            a = 2 * math.pi * k / 72
+            r1x, r1y = 38, 31
+            r2 = 1 + 0.10 + 0.06 * rng.random()
+            x1, y1 = math.cos(a) * r1x, math.sin(a) * r1y - 1
+            p.drawLine(QPointF(x1, y1), QPointF(x1 * r2, y1 * r2))
+        g = QRadialGradient(QPointF(-12, -18), 60)
+        g.setColorAt(0, QColor("#4a525e"))
+        g.setColorAt(0.6, QColor("#262b33"))
+        g.setColorAt(1, QColor("#14171c"))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(g))
+        p.drawEllipse(head)
+        # teal crest across the top of the head
+        crest = QPainterPath(QPointF(-26, -22))
+        crest.cubicTo(QPointF(-10, -34), QPointF(10, -34), QPointF(26, -22))
+        p.setPen(QPen(_a(teal, 230), 3.2, Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(crest)
+
+        # eyes: two big glossy principal eyes, two side eyes, look toward the screen
+        look = QPointF(-sx * 2.2, -sy * 1.2)
+        blink = (t % 6.3) < 0.12 or st.mode == "fail"
+        for ex in (-14, 14):
+            c = QPointF(ex, -2)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#07080a"))
+            p.drawEllipse(c, 13, 13)
+            ring = QRadialGradient(c + look, 13)
+            ring.setColorAt(0.0, QColor("#0b0d10"))
+            ring.setColorAt(0.62, QColor("#0b0d10"))
+            ring.setColorAt(0.80, _a(teal, 200))
+            ring.setColorAt(1.0, QColor("#0b0d10"))
+            p.setBrush(QBrush(ring))
+            p.drawEllipse(c + look, 11, 11)
+            p.setBrush(_a("#ffffff", 235))
+            p.drawEllipse(c + QPointF(-4.5, -5) + look * 0.4, 3.6, 3.0)
+            p.setBrush(_a("#ffffff", 120))
+            p.drawEllipse(c + QPointF(4, 4) + look * 0.4, 1.6, 1.6)
+            if blink:
+                lid = QPainterPath(c + QPointF(-13, 0))
+                lid.arcTo(QRectF(c.x() - 13, c.y() - 13, 26, 26), 180, -180)
+                lid.closeSubpath()
+                p.setBrush(QColor("#2a3038"))
+                p.drawPath(lid)
+        for ex, ey in ((-31, -6), (31, -6), (-24, -20), (24, -20)):
+            p.setBrush(QColor("#07080a"))
+            p.drawEllipse(QPointF(ex, ey), 4.2, 4.2)
+            p.setBrush(_a("#ffffff", 200))
+            p.drawEllipse(QPointF(ex - 1.2, ey - 1.4), 1.3, 1.1)
+
+        # palps with ember tips
+        for side in (-1, 1):
+            p.setPen(QPen(QColor("#2b3139"), 5, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(side * 8, 18), QPointF(side * 11, 28))
+            p.setPen(Qt.NoPen)
+            p.setBrush(ember)
+            p.drawEllipse(QPointF(side * 11.5, 29.5), 3.4, 3.0)
+        p.restore()
+
+        # little marks: a red "!" on fail, a "z" in focus
+        if st.mode == "fail" and not st.focus:
+            p.setPen(QColor("#ff5d5d"))
+            p.setFont(QFont("Segoe UI", 15, QFont.Black))
+            p.drawText(QPointF(cx + 36 * (-sx), by - 40), "!")
+        if st.focus:
+            p.setPen(_a("#9aa0a6", 150 + 100 * math.sin(t)))
+            f = QFont("Segoe UI", 11)
+            f.setItalic(True)
+            p.setFont(f)
+            p.drawText(QPointF(cx - sx * 40, by - 40 - (t * 12) % 30), "z")
+
+
+PERSONAS = {"zip": Zip(), "vesper": Vesper(), "nib": Nib()}

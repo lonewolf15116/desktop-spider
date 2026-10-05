@@ -89,17 +89,29 @@ def set_startup(on):
         return False, str(e)
 
 
-# ── tray icon picture: the current persona, drawn small
+# ── tray icon picture: the current persona, drawn and cropped to the spider
 def persona_icon(persona, state, accent):
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
+    from PyQt5.QtGui import QColor, QImage
+    img = QImage(200, 200, QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
-    p.translate(-18, -18)          # crop the 100px drawing to the spider's body
     try:
-        persona.draw(p, 100, 100, state, 0.0, (1, 1), accent)
+        persona.draw(p, 200, 200, state, 10.0, (1, 1), accent)     # t=10: after any entrance animation
     finally:
         p.end()
+    xs, ys = [], []
+    for y in range(0, 200, 2):
+        for x in range(0, 200, 2):
+            if QColor.fromRgba(img.pixel(x, y)).alpha() > 60:
+                xs.append(x)
+                ys.append(y)
+    if xs:
+        # centre on the body: legs are cropped a little so the icon reads at 16 px
+        cx, cy = (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2
+        half = max(24, int(max(max(xs) - min(xs), max(ys) - min(ys)) * 0.36))
+        img = img.copy(cx - half, cy - half, 2 * half, 2 * half)
+    pm = QPixmap.fromImage(img.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
     return QIcon(pm)
 
 

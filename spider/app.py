@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QFileDialog, Q
 from . import settings as cfg
 from .brain import Ask, apply_edit, build_context
 from .bubble import Bubble
+from .chat import ChatWindow
 from .legs import Legs
 from .memory import Memory, Stats, explicit_request, looks_secret
 from .memory_panel import MemoryPanel
@@ -22,7 +23,10 @@ from .personas import PERSONAS, SpiderState
 from . import always, sync, tasks
 from .phone import PhoneLink
 
-SIZE = 200
+DRAW = 200                     # personas draw on a 200×200 canvas; the window scales it
+SIZES = {"small": 130, "medium": 165, "large": 200}
+FADE_AFTER = 20                # seconds of quiet before the spider fades
+FADED = 0.35
 CORNERS = {"top-left": (-1, -1), "top-right": (1, -1), "bottom-left": (-1, 1), "bottom-right": (1, 1)}
 
 
@@ -30,32 +34,40 @@ class SpiderWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(SIZE, SIZE)
-        self.setToolTip("Click to talk · right-click for options · drag to another corner")
         self.s = cfg.load()
+        self.setFixedSize(self.px, self.px)
+        self.setToolTip("Click to talk · right-click for options · drag to another corner")
+        self.opacity = 1.0
+        self.last_active = time.time()
+        self.hovered = False
         self.st = SpiderState()
         self.st.focus = bool(self.s.get("focus"))
         self.t0 = time.time()
         self.drag_from = None
         self.history = []
-        self.pending_edit = None
+        self.pending_edits = []
         self.worker = None
         self.long_notes = 0
         self.last_idle_line = time.time()
         self.seen_no_tests = False
 
         self.bubble = Bubble()
-        self.bubble.asked.connect(self.ask)
-        self.bubble.approved.connect(self.approve)
-        self.bubble.rejected.connect(self.reject)
-        self._restyle()
+        self.bubble.clicked.connect(self.summon)
+        self.chat = ChatWindow()
+        self.chat.asked.connect(self.ask)
+        self.chat.approved.connect(self.approve)
+        self.chat.rejected.connect(self.reject)
+        self.chat.stop_requested.connect(self.stop_answer)
+        self.chat.cleared.connect(self.new_chat)
+        self.chat.closed.connect(self._remember_chat_place)
+        self.chat.restore(self.s.get("chat_geometry"))
 
         # memory: what the spider knows about you (each item approved by you)
         self.memory = Memory()
         self.stats = Stats()
         self.mem_queue = []          # [(fact, source)] waiting for your yes/no
-        self.bubble.mem_yes.connect(self.memory_yes)
-        self.bubble.mem_no.connect(self.memory_no)
+        self.chat.mem_yes.connect(self.memory_yes)
+        self.chat.mem_no.connect(self.memory_no)
         self.panel = MemoryPanel(self.memory)
         self.panel.learning_toggled.connect(lambda on: self._set("learning", on))
         self._restyle()
@@ -75,6 +87,7 @@ class SpiderWindow(QWidget):
         # stage 3: where you left off
         self.session = always.load_session()
         self.history = list(self.session.get("history", []))[-8:]
+        self.chat.load_history(self.history)
 
         # stage 3: tray icon
         self.tray = None
@@ -111,7 +124,11 @@ class SpiderWindow(QWidget):
     # ── helpers
     @property
     def persona(self):
-        return PERSONAS.get(self.s.get("persona"), PERSONAS["vesper"])
+        return PERSONAS.get(self.s.get("persona"), PERSONAS["zip"])
+
+    @property
+    def px(self):
+        return SIZES.get(self.s.get("size"), SIZES["small"])
 
     @property
     def corner(self):
@@ -132,19 +149,27 @@ class SpiderWindow(QWidget):
             return
         line = self.persona.say(event, **kw)
         if line:
+            self.poke()
             self.bubble.say(line)
 
     def tell(self, line, ms=6000):
-        """A short notice that shows even when the chat is open (never over a pending approval)."""
-        if self.bubble.mode == "chat":
-            self.bubble.show_answer(line)
-        elif self.bubble.mode != "approve":
+        """A notice: into the chat when it's open, otherwise a speech bubble."""
+        self.poke()
+        if self.chat.isVisible():
+            self.chat.show_answer(line)
+        else:
             self.bubble.say(line, ms)
+
+    def poke(self):
+        """Something happened: wake up from the idle fade."""
+        self.last_active = time.time()
 
     def _restyle(self):
         self.bubble.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"))
+        label = cfg.PROVIDERS[cfg.provider(self.s)][1]
+        self.chat.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"),
+                            f"{label} · {cfg.model_for(self.s)}")
         if hasattr(self, "panel"):
-            label = cfg.PROVIDERS[cfg.provider(self.s)][1]
             self.panel.style_for(self.persona.key, self.persona.name, self.s.get("accent", "#f2a93b"), label)
         if getattr(self, "tray", None):
             self._refresh_tray()
@@ -157,8 +182,8 @@ class SpiderWindow(QWidget):
         self.s["corner"] = corner_name
         geo = QApplication.primaryScreen().availableGeometry()
         sx, sy = CORNERS[corner_name]
-        x = geo.right() - SIZE + 1 if sx > 0 else geo.left()
-        y = geo.bottom() - SIZE + 1 if sy > 0 else geo.top()
+        x = geo.right() - self.px + 1 if sx > 0 else geo.left()
+        y = geo.bottom() - self.px + 1 if sy > 0 else geo.top()
         self.move(x, y)
         self.bubble.place(self.frameGeometry(), self.corner)
         self.save()
@@ -175,17 +200,37 @@ class SpiderWindow(QWidget):
         if self.st.mode == "pass" and self.now() - self.st.mode_since > 2.6:
             self.set_mode("idle")
         if self.s.get("chattiness") == "talkative" and self.st.mode == "idle" \
-                and time.time() - self.last_idle_line > 480 and not self.bubble.isVisible():
+                and time.time() - self.last_idle_line > 480 and not self.bubble.isVisible() \
+                and not self.chat.isVisible():
             self.last_idle_line = time.time()
             self.speak("idle")
+        # fade when nothing is going on, so it never sits heavily over your work
+        busy = (self.hovered or self.chat.isVisible() or self.bubble.isVisible() or self.drag_from is not None
+                or self.st.mode not in ("idle", "pass") or self.st.legs.get("tests") == "fail")
+        if busy:
+            self.last_active = time.time()
+        quiet = self.s.get("fade_when_idle", True) and time.time() - self.last_active > FADE_AFTER
+        target = FADED if quiet else 1.0
+        self.opacity += (target - self.opacity) * (0.04 if quiet else 0.35)
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        self.persona.draw(p, self.width(), self.height(), self.st, self.now(), self.corner,
-                          self.s.get("accent", "#f2a93b"))
+        p.setOpacity(max(0.0, min(1.0, self.opacity)))
+        p.scale(self.width() / DRAW, self.height() / DRAW)
+        self.persona.draw(p, DRAW, DRAW, self.st, self.now(), self.corner, self.s.get("accent", "#f2a93b"))
         p.end()
+
+    def enterEvent(self, e):
+        self.hovered = True
+        self.poke()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.hovered = False
+        self.poke()
+        super().leaveEvent(e)
 
     # ── mouse
     def mousePressEvent(self, e):
@@ -240,6 +285,17 @@ class SpiderWindow(QWidget):
             a.triggered.connect(lambda _, p=prov: self.set_provider(p))
             grp3.addAction(a)
             bm.addAction(a)
+        zm = m.addMenu("Size")
+        grp4 = QActionGroup(zm)
+        for name in SIZES:
+            a = QAction(name.capitalize(), zm, checkable=True, checked=(self.s.get("size", "small") == name))
+            a.triggered.connect(lambda _, n=name: self.set_size(n))
+            grp4.addAction(a)
+            zm.addAction(a)
+        zm.addSeparator()
+        fd = QAction("Fade when idle", zm, checkable=True, checked=bool(self.s.get("fade_when_idle", True)))
+        fd.triggered.connect(lambda on: (self._set("fade_when_idle", on), self.poke()))
+        zm.addAction(fd)
         f = QAction("Focus mode", m, checkable=True, checked=self.st.focus)
         f.triggered.connect(self.toggle_focus)
         m.addAction(f)
@@ -286,18 +342,25 @@ class SpiderWindow(QWidget):
         self.s[k] = v
         self.save()
 
+    def set_size(self, name):
+        self.s["size"] = name
+        self.setFixedSize(self.px, self.px)
+        self.snap(self.s.get("corner", "bottom-right"))
+        self.poke()
+
     def switch_persona(self, key):
         self.s["persona"] = key
         self.save()
         self._restyle()
         self.bubble.close_bubble()
+        self.t0 = time.time()        # replay the entrance
         self.speak("welcome", important=True)
 
     def toggle_focus(self):
         self.st.focus = not self.st.focus
         self.s["focus"] = self.st.focus
         self.save()
-        if self.st.focus and self.bubble.mode != "approve":
+        if self.st.focus:
             self.bubble.close_bubble()
 
     def choose_folder(self):
@@ -331,7 +394,7 @@ class SpiderWindow(QWidget):
         self.panel.refresh()
         geo = QApplication.primaryScreen().availableGeometry()
         sx, sy = self.corner
-        x = self.x() - self.panel.width() - 10 if sx > 0 else self.x() + SIZE + 10
+        x = self.x() - self.panel.width() - 10 if sx > 0 else self.x() + self.width() + 10
         y = geo.bottom() - self.panel.height() - 40 if sy > 0 else geo.top() + 40
         self.panel.move(max(geo.left(), x), max(geo.top(), y))
         self.panel.show()
@@ -347,26 +410,23 @@ class SpiderWindow(QWidget):
         if not fact or self.memory.has(fact) or any(f == fact for f, _ in self.mem_queue):
             return
         self.mem_queue.append((fact, source))
-        if not self.bubble.mem_fact:
+        if not self.chat.mem_fact:
             self._next_offer()
 
     def _next_offer(self):
         if not self.mem_queue:
-            self.bubble.clear_memory_offer()
+            self.chat.clear_memory_offer()
             return
         fact, source = self.mem_queue[0]
         line = self.persona.say("noticed_offer" if source == "noticed" else "remember_offer")
-        self.bubble.offer_memory(line, fact)
+        self.chat.offer_memory(line, fact)
+        self.chat.open_chat()
 
     def _settle_offer(self, line):
         self.mem_queue = self.mem_queue[1:]
-        self.bubble.memtext.setText(line)
-        self.bubble.memyes.hide()
-        self.bubble.memno.hide()
+        self.chat.settle_memory(line)
 
         def done():
-            self.bubble.memyes.show()
-            self.bubble.memno.show()
             self._next_offer()
         QTimer.singleShot(1300, done)
 
@@ -388,16 +448,16 @@ class SpiderWindow(QWidget):
     def run_command(self, kind, payload):
         if kind == "note":
             tasks.add_note(payload, self.notes_path)
-            self.bubble.show_answer(f"{self.persona.say('noted')}\n\n*{payload}*")
+            self.chat.show_answer(f"{self.persona.say('noted')}\n\n*{payload}*")
         elif kind == "remind":
             r = self.reminders.add(payload["at"], payload["text"])
-            self.bubble.show_answer(self.persona.say("reminder_set", when=tasks.when_text(r["at"]), text=r["text"]))
+            self.chat.show_answer(self.persona.say("reminder_set", when=tasks.when_text(r["at"]), text=r["text"]))
         elif kind == "list_reminders":
             ups = self.reminders.upcoming()
-            self.bubble.show_answer("\n".join(f"- {tasks.when_text(r['at'])}: {r['text']}" for r in ups)
-                                    or "No reminders set.")
+            self.chat.show_answer("\n".join(f"- {tasks.when_text(r['at'])}: {r['text']}" for r in ups)
+                                  or "No reminders set.")
         elif kind == "summary":
-            self.bubble.show_answer(self.summary_text())
+            self.chat.show_answer(self.summary_text())
 
     def summary_text(self):
         folders = [f for f in dict.fromkeys([self.s.get("watch_folder", "")] + self.s.get("recent_folders", [])) if f]
@@ -405,16 +465,12 @@ class SpiderWindow(QWidget):
                                    tasks.recent_notes(3, self.notes_path))
 
     def show_summary(self):
-        self.bubble.open_chat()
-        self.bubble.show_answer(self.summary_text())
+        self.chat.add_user("Today's summary")
+        self.chat.show_answer(self.summary_text())
 
     def check_reminders(self):
         for r in self.reminders.due():
-            line = self.persona.say("reminder", text=r["text"])
-            if self.bubble.mode == "chat":
-                self.bubble.show_answer(line)
-            elif self.bubble.mode != "approve":     # never cover a pending approval
-                self.bubble.say(line, 30_000)
+            self.tell(self.persona.say("reminder", text=r["text"]), 30_000)
             if self.tray:
                 self.tray.showMessage(self.persona.name, r["text"], QSystemTrayIcon.Information, 15_000)
 
@@ -429,27 +485,26 @@ class SpiderWindow(QWidget):
         if not path:
             return
         text, err = tasks.pdf_text(path)
-        self.bubble.open_chat()
+        self.chat.open_chat()
         if err:
-            self.bubble.show_answer(err)
+            self.chat.show_answer(err)
             return
         ctx = f"Paper: {os.path.basename(path)}\n\n{text}"
-        self.ask(tasks.PAPER_QUESTION, extra_context=ctx)
+        self.ask(tasks.PAPER_QUESTION, extra_context=ctx, shown=f"Read the paper {os.path.basename(path)}")
 
     # ── stage 3: always there
     def summon(self):
         if not self.isVisible():
             self.show()
         self.raise_()
-        if self.bubble.mode != "chat":
-            self.toggle_chat()
-        self.bubble.activateWindow()
-        self.bubble.input.setFocus()
+        self.poke()
+        self.open_chat()
 
     def toggle_visible(self):
         if self.isVisible():
             self.hide()
             self.bubble.close_bubble()
+            self.chat.close_chat()
         else:
             self.show()
 
@@ -468,7 +523,16 @@ class SpiderWindow(QWidget):
         elif reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.summon()
 
+    def _remember_chat_place(self):
+        self.s["chat_geometry"] = self.chat.geom()
+        self.save()
+
     def shutdown(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(2000)
+        if self.chat.isVisible():
+            self._remember_chat_place()
         always.save_session(self.history, self.legs.folder)
         self.phone.stop()
         self.sync_memory(quiet=True)
@@ -517,8 +581,7 @@ class SpiderWindow(QWidget):
 
     def show_pairing(self):
         code = self.phone.current_code()
-        self.bubble.open_chat()
-        self.bubble.show_answer(
+        self.chat.show_answer(
             f"{self.persona.say('phone_on')}\n\nOn your phone, connected to the same Wi-Fi, open:\n\n"
             f"**{self.phone.url()}**\n\nPairing code: **{code[:3]} {code[3:]}** (works once, for 10 minutes)\n\n"
             "If Windows asks whether Python may use the network, allow it on **private** networks only.")
@@ -530,7 +593,7 @@ class SpiderWindow(QWidget):
             self.long_notes += 1
             self.speak("long_session", hours=hours * self.long_notes)
         if self.s.get("learning", True) and not self.st.focus and self.st.mode == "idle" \
-                and not self.bubble.isVisible():
+                and not self.bubble.isVisible() and not self.chat.isVisible():
             noticed = self.stats.suggestion(self.memory)
             if noticed:
                 self.offer(noticed, source="noticed")
@@ -548,7 +611,7 @@ class SpiderWindow(QWidget):
                 self.set_mode("running")
             elif state == "pass":
                 self.set_mode("pass")
-                cx, cy = self.width() * 0.5, self.height() * 0.5
+                cx, cy = DRAW * 0.5, DRAW * 0.5
                 self.st.splats = [(cx + random.uniform(-60, 60), cy + random.uniform(-60, 60),
                                    random.uniform(4, 9), self.now()) for _ in range(3)]
                 self.speak("pass", n=info.get("passed", 0))
@@ -566,18 +629,22 @@ class SpiderWindow(QWidget):
 
     # ── model route
     def toggle_chat(self):
-        if self.bubble.mode == "approve":
-            self.bubble._show()
-            return
-        if self.bubble.mode == "chat":
-            self.bubble.close_bubble()
-            return
-        intro = ""
-        if not cfg.api_key(cfg.provider(self.s)):
-            intro = self._no_key_line()
-        self.bubble.open_chat(intro)
+        if self.chat.mode == "chat":
+            self.chat.close_chat()
+        else:
+            self.open_chat()
 
-    def ask(self, question, extra_context=None):
+    def open_chat(self):
+        self.chat.place_near(self.frameGeometry(), self.corner)
+        intro = "" if cfg.api_key(cfg.provider(self.s)) else self._no_key_line()
+        self.bubble.close_bubble()
+        self.chat.open_chat(intro)
+
+    def ask(self, question, extra_context=None, shown=None):
+        self.poke()
+        if self.worker and self.worker.isRunning():
+            return
+        self.chat.add_user(shown or question)
         cmd = None if extra_context else tasks.parse_command(question)
         if cmd:
             self.run_command(*cmd)
@@ -585,28 +652,37 @@ class SpiderWindow(QWidget):
         fact = explicit_request(question)
         if fact:                     # "remember that …" is handled locally, no model call
             if looks_secret(fact):
-                self.bubble.show_answer(self.persona.say("secret_refused"))
+                self.chat.show_answer(self.persona.say("secret_refused"))
             else:
-                self.bubble.show_answer(f"*{fact}*")
+                self.chat.show_answer(f"*{fact}*")
                 self.offer(fact, source="told")
             return
         prov = cfg.provider(self.s)
         key = cfg.api_key(prov)
         if not key:
-            self.bubble.open_chat(self._no_key_line())
-            return
-        if self.worker and self.worker.isRunning():
+            self.chat.show_answer(self._no_key_line())
             return
         self.set_mode("thinking")
-        self.bubble.show_thinking(self.persona.say("thinking"))
+        self.chat.begin_answer(self.persona.say("thinking"))
         ctx = extra_context or build_context(self.legs.folder, self.legs.last_file, self.legs.last_output,
                                              self.legs.last_syntax)
+        self._learned = []
         self.worker = Ask(prov, key, cfg.model_for(self.s), self.persona.voice, self.history, question, ctx,
                           self.legs.folder, memory_text=self.memory.as_prompt())
+        self.worker.partial.connect(self.chat.stream)
+        self.worker.activity.connect(self.chat.show_activity)
         self.worker.learned.connect(self.on_learned)
-        self.worker.answered.connect(lambda text, edit, q=question: self.on_answer(q, text, edit))
+        self.worker.answered.connect(lambda text, edits, q=question: self.on_answer(q, text, edits))
         self.worker.failed.connect(self.on_fail)
         self.worker.start()
+
+    def stop_answer(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+
+    def new_chat(self):
+        self.history = []
+        always.save_session(self.history, self.legs.folder)
 
     def _no_key_line(self):
         var, label = cfg.PROVIDERS[cfg.provider(self.s)]
@@ -616,51 +692,59 @@ class SpiderWindow(QWidget):
         self.s["provider"] = prov
         self.save()
         self.history = []
-        label = cfg.PROVIDERS[prov][1]
-        self.bubble.say(f"{label} · {cfg.model_for(self.s)}", 3500)
+        self._restyle()
+        self.tell(f"{cfg.PROVIDERS[prov][1]} · {cfg.model_for(self.s)}", 3500)
 
     def on_learned(self, facts):
         self._learned = [] if not self.s.get("learning", True) else facts
 
-    def on_answer(self, question, text, edit):
+    def on_answer(self, question, text, edits):
         self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
         self.history = self.history[-12:]
-        if edit:
-            self.pending_edit = edit
+        always.save_session(self.history, self.legs.folder)
+        self.chat.finish_answer(text)
+        if edits:
+            self.pending_edits = list(edits)
             self.set_mode("waiting")     # the "you" route: gold thread, nothing written yet
-            self.bubble.show_edit(self.persona.say("needs_approval"), text, edit["diff"])
+            self.chat.show_edits(self.persona.say("needs_approval"), self.pending_edits)
         else:
             self.set_mode("idle")
-            self.bubble.show_answer(text)
         for fact in getattr(self, "_learned", []):
             self.offer(fact, source="told")
         self._learned = []
 
     def on_fail(self, msg):
         self.set_mode("idle")
-        self.bubble.show_answer(self.persona.say("error", msg=msg))
+        self.chat.finish_answer(self.persona.say("error", msg=msg))
 
     # ── you route
     def approve(self):
-        e, self.pending_edit = self.pending_edit, None
-        if not e:
+        edits, self.pending_edits = self.pending_edits, []
+        self.chat.clear_edits()
+        if not edits:
             return
-        try:
-            apply_edit(self.legs.folder, e["target"], e["text"])
-        except OSError as err:
-            self.set_mode("idle")
-            self.bubble.show_answer(self.persona.say("error", msg=str(err)))
-            return
+        done, errors = [], []
+        for e in edits:
+            try:
+                apply_edit(self.legs.folder, e["target"], e["text"])
+                done.append(e["rel"])
+            except OSError as err:
+                errors.append(f"{e['rel']}: {err}")
         self.set_mode("idle")
-        self.bubble.close_bubble()
-        self.bubble.say(self.persona.say("approved"))
-        self.legs.run_tests()
+        lines = [self.persona.say("approved") if done else self.persona.say("error", msg="; ".join(errors))]
+        if done:
+            lines.append("Written: " + ", ".join(f"`{r}`" for r in done) + " (old copies in `.spider_backups/`).")
+        if done and errors:
+            lines.append("Not written: " + "; ".join(errors))
+        self.chat.show_answer("\n\n".join(lines))
+        if done:
+            self.legs.run_tests()
 
     def reject(self):
-        self.pending_edit = None
+        self.pending_edits = []
+        self.chat.clear_edits()
         self.set_mode("idle")
-        self.bubble.close_bubble()
-        self.bubble.say(self.persona.say("rejected"))
+        self.chat.show_answer(self.persona.say("rejected"))
 
     def moveEvent(self, e):
         self.bubble.place(self.frameGeometry(), self.corner)

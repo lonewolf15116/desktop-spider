@@ -4,6 +4,23 @@ from PyQt5.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, 
                              QScrollArea, QVBoxLayout, QWidget)
 
 STYLE = {
+    "zip": """
+        QWidget#panel {{ background: #121519; }}
+        QLabel {{ color: #e7eef0; font-size: 10pt; font-family: "Segoe UI", sans-serif; }}
+        QLabel#title {{ color: #22d3c5; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }}
+        QLabel#hint, QLabel#meta {{ color: #8796a0; font-size: 8.5pt; }}
+        QLabel#kind {{ color: #ff8a3d; font-size: 7.5pt; letter-spacing: 1px; }}
+        QFrame#item {{ background: #1b2027; border: 1px solid rgba(34,211,197,60); border-radius: 8px; }}
+        QLineEdit {{ background: #1b2027; color: #e7eef0; border: 1px solid rgba(34,211,197,80);
+                     border-radius: 8px; padding: 6px 8px; font-size: 10pt; }}
+        QPushButton {{ background: transparent; color: #e7eef0; border: 1px solid rgba(34,211,197,80);
+                       border-radius: 7px; padding: 4px 10px; font-size: 9pt; }}
+        QPushButton#add {{ background: #ff8a3d; color: #1d0e03; border: none; font-weight: 600; }}
+        QPushButton#forget {{ border: none; color: #8796a0; }}
+        QPushButton#forget:hover {{ color: #ff7b7b; }}
+        QCheckBox {{ color: #c9d3d8; font-size: 9pt; }}
+        QScrollArea, QWidget#list {{ background: transparent; border: none; }}
+    """,
     "vesper": """
         QWidget#panel {{ background: #0f1116; }}
         QLabel {{ color: #e9e4d8; font-size: 10pt; }}
@@ -91,7 +108,7 @@ class MemoryPanel(QWidget):
         lay.addLayout(bottom)
 
     def style_for(self, persona_key, persona_name, accent, provider_label):
-        self.setStyleSheet(STYLE[persona_key].format(accent=accent))
+        self.setStyleSheet(STYLE.get(persona_key, STYLE["zip"]).format(accent=accent))
         self.setWindowTitle(f"{persona_name}'s memory")
         self.title.setText("WHAT I KNOW ABOUT YOU" if persona_key == "vesper" else "Stuff I know about you")
         self.hint.setText(f"Each line was approved by you. These are sent to {provider_label} with every question, "

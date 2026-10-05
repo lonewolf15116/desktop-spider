@@ -2,8 +2,9 @@
 
 A coding companion that lives in the corner of your screen. Its legs watch your project, it talks to OpenAI or Claude when you ask, and it never changes your code without your approval.
 
-Two personas, switchable from the right-click menu:
+Three personas, switchable from the right-click menu:
 
+- **Zip** (default), the jumping spider: quick, bright and upbeat. Charcoal fuzz, teal stripes and four big eyes. It drops in on a silk thread, does a backflip when your tests pass and slumps when they fail.
 - **Vesper**, the glass weaver: calm, precise, a little mysterious. Smoked glass with amber light.
 - **Nib**, the ink familiar: warm, curious, cheeky. A hand-inked spider with glowing eyes.
 
@@ -16,8 +17,25 @@ Every action takes one of three routes, shown by the colour of the spider's thre
 | Route | Colour | What runs |
 |---|---|---|
 | **code** | green | The legs. A syntax check on every save and your test command after it. Instant, no model calls. |
-| **model** | blue | Click the spider and ask OpenAI (default) or Claude. It sends your latest saved file and test output as context. |
+| **model** | blue | Click the spider and ask OpenAI (default) or Claude. It starts with a project overview, your latest saved file and test output, and can read more of the project itself (see below). |
 | **you** | gold | Any file change the model proposes is shown as a diff. Nothing is written until you press **Approve**. The old file is backed up to `.spider_backups/` first. |
+
+## The chat window
+
+Click the spider (or press **Ctrl+Alt+V**) to open a proper chat window. Move and resize it, and it opens in the same place next time.
+
+- **Replies stream in** as they're written. **Stop** cuts one short.
+- Code blocks have a **Copy** button.
+- **It reads your project.** Before answering, the model can list folders, read files and search your code. You'll see what it's doing under the chat (for example *Reading app/api.py*). These tools are read-only, can't leave the project folder and never open `.env`.
+- **Fixes that span files.** One answer can change up to 6 files. You get every diff in one card and choose **Approve all** or **Reject**.
+- **Enter** sends, **Shift+Enter** adds a new line, **Esc** hides the window and **New chat** starts fresh.
+
+The small bubble next to the spider is only for short remarks, like tests passing or a reminder. Click it to open the chat.
+
+## Out of your way
+
+- Right-click → **Size**: small (the default), medium or large.
+- After 20 quiet seconds the spider fades to a ghost. It comes back when you hover over it, when tests run or fail, or when it has something to say. Turn this off with **Size → Fade when idle**.
 
 ## Memory: it learns you
 
@@ -75,12 +93,12 @@ Or from a terminal: `pip install -r requirements.txt`, then `python -m spider`.
 
 ## Controls
 
-- **Click** to open the chat bubble. **Esc** closes it.
+- **Click** to open the chat window. **Esc** hides it.
 - **Drag** to move it. It snaps to the nearest screen corner.
 - **Ctrl+Alt+V** summons the chat from anywhere. The **tray icon** does the same. Right-click → **Always there** shows the shortcut in use.
-- **Right-click** for today's summary, papers, notes, memory, devices, brain (OpenAI or Claude), persona, chattiness (silent, normal, talkative), focus mode, project folder, running tests, and quit.
+- **Right-click** for today's summary, papers, notes, memory, devices, brain (OpenAI or Claude), persona, size and fade, chattiness (silent, normal, talkative), focus mode, project folder, running tests, and quit.
 
-Settings are saved in `settings.json`: persona, corner, accent colour, chattiness, watch folder, test command, active legs, brain (`provider`, `openai_model`, `anthropic_model`) and long-session reminder hours.
+Settings are saved in `settings.json`: persona, size, fade when idle, corner, accent colour, chattiness, watch folder, test command, active legs, brain (`provider`, `openai_model`, `anthropic_model`), long-session reminder hours and where the chat window was.
 
 ## Develop
 
@@ -95,5 +113,6 @@ These files live next to the app and are all in `.gitignore`: `.env` (keys), `se
 ## Roadmap
 
 - More legs: a linter, git status, reading errors from your terminal.
+- Let the model run your tests itself (after asking you) to check its own fix before you approve it.
 - Parallel model agents, one per leg, each in its own git worktree.
 - HTTPS for the phone link, and approving code changes from the phone with a second confirmation on the laptop.

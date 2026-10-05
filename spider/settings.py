@@ -7,7 +7,7 @@ SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 ENV_PATH = os.path.join(APP_DIR, ".env")
 
 DEFAULTS = {
-    "persona": "vesper",            # "vesper" or "nib"
+    "persona": "zip",               # "zip", "vesper" or "nib"
     "corner": "bottom-right",       # top-left, top-right, bottom-left, bottom-right
     "accent": "#f2a93b",            # Vesper's light, Nib's eyes
     "chattiness": "normal",         # silent, normal, talkative
@@ -26,6 +26,9 @@ DEFAULTS = {
     "phone_port": 8765,
     "tray": True,
     "hotkey": "ctrl+alt+v",          # stage 3: global shortcut; falls back if another app owns it
+    "size": "small",                # small, medium, large
+    "fade_when_idle": True,         # fade to a ghost after a while so it never covers your work
+    "chat_geometry": [],            # where you last left the chat window
 }
 
 

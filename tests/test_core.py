@@ -78,32 +78,72 @@ def test_provider_defaults_and_keys(tmp_path, monkeypatch):
     assert cfg.provider(s) == "openai"
 
 
-def test_openai_call_parses_edit(tmp_path, monkeypatch):
-    import sys
+def _fake_openai(replies, seen):
+    """A stand-in for the openai package that streams canned replies, one per round."""
     import types
-    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a - b\n")
-    reply = "Subtraction bug.\n```edit path=calc.py\ndef add(a, b):\n    return a + b\n```"
-    seen = {}
+
+    def chunk(content=None, tool_calls=None):
+        delta = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)])
 
     class FakeClient:
         def __init__(self, api_key):
             seen["key"] = api_key
             self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
 
-        def create(self, model, messages):
-            seen["model"], seen["system"] = model, messages[0]["content"]
-            msg = types.SimpleNamespace(content=reply)
-            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+        def create(self, model, messages, stream=False, tools=None):
+            seen["model"], seen["system"], seen["stream"] = model, messages[0]["content"], stream
+            seen.setdefault("rounds", []).append([dict(m) for m in messages])
+            seen["tools"] = [t["function"]["name"] for t in tools or []]
+            reply = replies.pop(0)
+            if isinstance(reply, str):
+                return iter([chunk(reply[i:i + 7]) for i in range(0, len(reply), 7)])
+            name, args = reply            # a tool call, split across two chunks like the real API
+            fn1 = types.SimpleNamespace(name=name, arguments=args[:5])
+            fn2 = types.SimpleNamespace(name=None, arguments=args[5:])
+            return iter([chunk(tool_calls=[types.SimpleNamespace(index=0, id="call_1", function=fn1)]),
+                         chunk(tool_calls=[types.SimpleNamespace(index=0, id=None, function=fn2)])])
 
-    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeClient))
+    return types.SimpleNamespace(OpenAI=FakeClient)
+
+
+def test_openai_call_parses_edit(tmp_path, monkeypatch):
+    import sys
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    reply = "Subtraction bug.\n```edit path=calc.py\ndef add(a, b):\n    return a + b\n```"
+    seen = {}
+    monkeypatch.setitem(sys.modules, "openai", _fake_openai([reply], seen))
     from spider.brain import Ask
     a = Ask("openai", "sk-x", "gpt-5-mini", "You are Nib.", [], "fix it", "ctx", str(tmp_path))
-    out = {}
-    a.answered.connect(lambda text, edit: out.update(text=text, edit=edit))
+    out, parts = {}, []
+    a.partial.connect(parts.append)
+    a.answered.connect(lambda text, edits: out.update(text=text, edits=edits))
     a.run()     # run synchronously, no thread
     assert seen["key"] == "sk-x" and seen["model"] == "gpt-5-mini" and "You are Nib." in seen["system"]
-    assert out["text"] == "Subtraction bug." and out["edit"]["rel"] == "calc.py"
-    assert "+    return a + b" in out["edit"]["diff"]
+    assert seen["stream"] is True and len(parts) > 3          # the reply arrived in pieces
+    assert out["text"] == "Subtraction bug." and [e["rel"] for e in out["edits"]] == ["calc.py"]
+    assert "+    return a + b" in out["edits"][0]["diff"]
+
+
+def test_model_reads_a_file_before_answering(tmp_path, monkeypatch):
+    import sys
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "util.py").write_text("def slug(s):\n    return s.lower()\n")
+    seen = {}
+    replies = [("read_file", '{"path": "pkg/util.py"}'), "slug() lowercases its input."]
+    monkeypatch.setitem(sys.modules, "openai", _fake_openai(replies, seen))
+    from spider.brain import Ask
+    a = Ask("openai", "k", "m", "You are Zip.", [], "what does slug do?", "ctx", str(tmp_path))
+    acts, out = [], {}
+    a.activity.connect(acts.append)
+    a.answered.connect(lambda t, e: out.update(text=t, edits=e))
+    a.run()
+    assert seen["tools"] == ["list_files", "read_file", "search_code"]
+    assert acts == ["Reading pkg/util.py"]
+    second = seen["rounds"][1]
+    assert second[-2]["tool_calls"][0]["function"]["arguments"] == '{"path": "pkg/util.py"}'
+    assert second[-1]["role"] == "tool" and "return s.lower()" in second[-1]["content"]
+    assert out == {"text": "slug() lowercases its input.", "edits": []}
 
 
 def test_context_includes_tree_and_readme(tmp_path):
@@ -158,19 +198,8 @@ def test_stats_notice_hours_and_project(tmp_path):
 
 def test_memory_sent_with_question(tmp_path, monkeypatch):
     import sys
-    import types
     seen = {}
-
-    class FakeClient:
-        def __init__(self, api_key):
-            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
-
-        def create(self, model, messages):
-            seen["system"] = messages[0]["content"]
-            msg = types.SimpleNamespace(content="Sure.\nremember: Prefers short answers")
-            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
-
-    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeClient))
+    monkeypatch.setitem(sys.modules, "openai", _fake_openai(["Sure.\nremember: Prefers short answers"], seen))
     from spider.brain import Ask
     a = Ask("openai", "k", "m", "You are Vesper.", [], "q", "ctx", str(tmp_path),
             memory_text="What you know about the user:\n- Uses Windows")
