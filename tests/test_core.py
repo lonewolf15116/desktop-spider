@@ -104,3 +104,15 @@ def test_openai_call_parses_edit(tmp_path, monkeypatch):
     assert seen["key"] == "sk-x" and seen["model"] == "gpt-5-mini" and "You are Nib." in seen["system"]
     assert out["text"] == "Subtraction bug." and out["edit"]["rel"] == "calc.py"
     assert "+    return a + b" in out["edit"]["diff"]
+
+
+def test_context_includes_tree_and_readme(tmp_path):
+    from spider.brain import build_context
+    (tmp_path / "README.md").write_text("# PaperTrail\nCited QA over ML papers.\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("print('hi')\n")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "x.pyc").write_text("")
+    ctx = build_context(str(tmp_path), "", "", None)
+    assert "app/main.py" in ctx and "Cited QA over ML papers" in ctx and "x.pyc" not in ctx
+    assert "Choose project folder" in build_context("", "", "", None)

@@ -20,10 +20,48 @@ If, and only if, a code change would clearly help (for example they ask for a fi
 Put your short explanation outside the block. Never say you have changed anything: the user reviews and approves every edit themselves."""
 
 
+TREE_SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv", "env", ".spider_backups",
+             ".pytest_cache", ".mypy_cache", "build", "dist", ".idea", ".vscode"}
+
+
+def project_overview(folder, max_files=150):
+    """A compact file list plus the README, so questions work before any file is saved."""
+    paths = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs if d not in TREE_SKIP and not d.startswith("."))
+        for f in sorted(files):
+            if f.startswith(".") and f != ".env.example":
+                continue
+            paths.append(os.path.relpath(os.path.join(root, f), folder).replace(os.sep, "/"))
+            if len(paths) >= max_files:
+                break
+        if len(paths) >= max_files:
+            paths.append("… (more files not listed)")
+            break
+    out = ["Files in the project:\n" + "\n".join(paths)] if paths else []
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        rp = os.path.join(folder, name)
+        if os.path.isfile(rp):
+            try:
+                with open(rp, encoding="utf-8", errors="replace") as f:
+                    txt = f.read(4000)
+                out.append(f"{name} (start):\n{txt}")
+            except OSError:
+                pass
+            break
+    return "\n\n".join(out)
+
+
 def build_context(folder, file_path, test_output, syntax):
     parts = []
     if folder:
         parts.append(f"Project folder: {folder}")
+        overview = project_overview(folder)
+        if overview:
+            parts.append(overview)
+    else:
+        parts.append("No project folder is selected yet. If the question needs the code, tell the user "
+                     "to right-click the spider and choose 'Choose project folder…'.")
     if file_path and os.path.isfile(file_path):
         rel = os.path.relpath(file_path, folder) if folder else file_path
         try:
